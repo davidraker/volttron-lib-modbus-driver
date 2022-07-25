@@ -44,10 +44,10 @@ follow these [instructions](https://python-poetry.org/docs/master/#installation)
 With `pip`:
 
 ```shell
-python3.8 -m pip install volttron-lib-modbustk-driver
+python3.8 -m pip install volttron-lib-modbus-driver
 
 # Develop mode
-python3.8 -m pip install --editable volttron-lib-modbustk-driver
+python3.8 -m pip install --editable volttron-lib-modbus-driver
 ```
 
 # Development
