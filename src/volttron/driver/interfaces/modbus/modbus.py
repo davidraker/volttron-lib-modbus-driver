@@ -47,11 +47,15 @@ from contextlib import closing, contextmanager
 
 from pymodbus.client.sync import ModbusTcpClient as SyncModbusClient
 from pymodbus.constants import Defaults
-from pymodbus.exceptions import (ConnectionException, ModbusException, ModbusIOException)
+from pymodbus.exceptions import ConnectionException, ModbusException, ModbusIOException
 from pymodbus.pdu import ExceptionResponse
 from volttron.driver.base.driver_locks import socket_lock
-from volttron.driver.base.interfaces import (BaseInterface, BaseRegister, BasicRevert,
-                                             DriverInterfaceError)
+from volttron.driver.base.interfaces import (
+    BaseInterface,
+    BaseRegister,
+    BasicRevert,
+    DriverInterfaceError,
+)
 from volttron.utils.logs import setup_logging
 
 
@@ -260,7 +264,7 @@ class Modbus(BasicRevert, BaseInterface):
         }
 
     def insert_register(self, register):
-        super(Interface, self).insert_register(register)
+        super(Modbus, self).insert_register(register)
 
         # MODBUS requires extra bookkeeping.
         register_type = register.get_register_type()
