@@ -234,17 +234,24 @@ class Modbus(BasicRevert, BaseInterface):
         }
         self.modbus_read_max = 100
 
+    ##### Implemented abstract methods from BaseInterface
+
     def configure(self, config_dict, registry_config_str):
         self.slave_id = config_dict.get("slave_id", 0)
         self.ip_address = config_dict["device_address"]
         self.port = config_dict.get("port", Defaults.Port)
         self.parse_config(registry_config_str)
 
-    @contextmanager
-    def modbus_client(self, address, port):
-        with socket_lock():
-            with closing(SyncModbusClient(address, port)) as client:
-                yield client
+    def get_point(self, point_name):
+        register = self.get_register_by_name(point_name)
+        with self.modbus_client(self.ip_address, self.port) as client:
+            try:
+                result = register.get_state(client)
+            except (ConnectionException, ModbusIOException, ModbusInterfaceException):
+                result = None
+        return result
+
+    ##### Overriden methods from BaseInterface
 
     def insert_register(self, register):
         super(Modbus, self).insert_register(register)
@@ -258,37 +265,10 @@ class Modbus(BasicRevert, BaseInterface):
         start, end = register.address, register.address + register_count - 1
         register_range.append([start, end, [register]])
 
-    def merge_register_ranges(self):
-        """
-        Merges any adjacent registers for more efficient scraping. May only be called after all registers have been
-        inserted."""
-        for key, register_ranges in self.register_ranges.items():
-            if not register_ranges:
-                continue
-            register_ranges.sort()
-            result = []
-            current = register_ranges[0]
-            for register_range in register_ranges[1:]:
-                if register_range[0] > current[1] + 1:
-                    result.append(current)
-                    current = register_range
-                    continue
+    ##### Uses implementation from BasicRevert for following BaseInterface abstract methods:
+    ##### set_point, scrape_all, revert_all, revert_point
 
-                current[1] = register_range[1]
-                current[2].extend(register_range[2])
-
-            result.append(current)
-
-            self.register_ranges[key] = result
-
-    def get_point(self, point_name):
-        register = self.get_register_by_name(point_name)
-        with self.modbus_client(self.ip_address, self.port) as client:
-            try:
-                result = register.get_state(client)
-            except (ConnectionException, ModbusIOException, ModbusInterfaceException):
-                result = None
-        return result
+    ##### Implemented abstract methods from BasicRevert
 
     def _set_point(self, point_name, value):
         register = self.get_register_by_name(point_name)
@@ -302,6 +282,24 @@ class Modbus(BasicRevert, BaseInterface):
                 raise IOError("Error encountered trying to write to point {}: {}".format(
                     point_name, ex))
         return result
+
+    def _scrape_all(self):
+        result_dict = {}
+        with self.modbus_client(self.ip_address, self.port) as client:
+            try:
+
+                result_dict.update(self.scrape_byte_registers(client, True))
+                result_dict.update(self.scrape_byte_registers(client, False))
+
+                result_dict.update(self.scrape_bit_registers(client, True))
+                result_dict.update(self.scrape_bit_registers(client, False))
+            except (ConnectionException, ModbusIOException, ModbusInterfaceException) as e:
+                raise DriverInterfaceError("Failed to scrape device at " + self.ip_address + ":" +
+                                           str(self.port) + " ID: " + str(self.slave_id) + str(e))
+
+        return result_dict
+
+    ##### Helper methods
 
     def scrape_byte_registers(self, client, read_only):
         result_dict = {}
@@ -356,22 +354,6 @@ class Modbus(BasicRevert, BaseInterface):
                 point = register.point_name
                 value = register.parse_value(start, result)
                 result_dict[point] = value
-
-        return result_dict
-
-    def _scrape_all(self):
-        result_dict = {}
-        with self.modbus_client(self.ip_address, self.port) as client:
-            try:
-
-                result_dict.update(self.scrape_byte_registers(client, True))
-                result_dict.update(self.scrape_byte_registers(client, False))
-
-                result_dict.update(self.scrape_bit_registers(client, True))
-                result_dict.update(self.scrape_bit_registers(client, False))
-            except (ConnectionException, ModbusIOException, ModbusInterfaceException) as e:
-                raise DriverInterfaceError("Failed to scrape device at " + self.ip_address + ":" +
-                                           str(self.port) + " ID: " + str(self.slave_id) + str(e))
 
         return result_dict
 
@@ -433,3 +415,32 @@ class Modbus(BasicRevert, BaseInterface):
 
         # Merge adjacent ranges for efficiency.
         self.merge_register_ranges()
+
+    def merge_register_ranges(self):
+        """
+        Merges any adjacent registers for more efficient scraping. May only be called after all registers have been
+        inserted."""
+        for key, register_ranges in self.register_ranges.items():
+            if not register_ranges:
+                continue
+            register_ranges.sort()
+            result = []
+            current = register_ranges[0]
+            for register_range in register_ranges[1:]:
+                if register_range[0] > current[1] + 1:
+                    result.append(current)
+                    current = register_range
+                    continue
+
+                current[1] = register_range[1]
+                current[2].extend(register_range[2])
+
+            result.append(current)
+
+            self.register_ranges[key] = result
+
+    @contextmanager
+    def modbus_client(self, address, port):
+        with socket_lock():
+            with closing(SyncModbusClient(address, port)) as client:
+                yield client

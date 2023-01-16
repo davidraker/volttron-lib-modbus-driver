@@ -33,7 +33,7 @@ VOLTTRON’s modbus driver supports the Modbus over TCP/IP protocol only.
     vctl install volttron-platform-driver --vip-identity platform.driver --start
     ```
 
-1. Install the volttron-lib-modbus-driver library. 
+1. Install the volttron-lib-modbus-driver library.
 
     ```shell
     pip install volttron-lib-modbus-driver
@@ -56,12 +56,12 @@ VOLTTRON’s modbus driver supports the Modbus over TCP/IP protocol only.
 
     * port: Port the device is listening on. Defaults to 502 which is the standard port for Modbus devices.
 
-    * slave_id:  Slave ID of the device. Defaults to 0. Use 0 for no slave. 
-    
-    This repo provides an example configuration in the file "modbus_example.config". 
+    * slave_id:  Slave ID of the device. Defaults to 0. Use 0 for no slave.
+
+    This repo provides an example configuration in the file "modbus_example.config".
 
     Here is an example device configuration file:
-    
+
     ```json
     {
         "driver_config": {"device_address": "10.0.0.4"},
@@ -107,9 +107,9 @@ VOLTTRON’s modbus driver supports the Modbus over TCP/IP protocol only.
     * Default Value - The default value for the point. When the point is reverted by an agent it will change back to this value. If this value is missing it will revert to the last known value not set by an agent.
 
     Any additional columns will be ignored. It is common practice to include a Point Name or Reference Point Name to include the device documentation’s name for the point and Notes and Unit Details for additional information about a point.
-    
+
     The following is an example of a Modbus registry configuration file:
-    
+
     ```csv
     Reference Point Name,Volttron Point Name,Units,Units Details,Modbus Register,Writable,Point Address,Default Value,Notes
     CO2Sensor,ReturnAirCO2,PPM,0.00-2000.00,>f,FALSE,1001,,CO2 Reading 0.00-2000.0 ppm
