@@ -1,9 +1,10 @@
-import os
-
 import gevent
+import json
+import os
 import pytest
+
 from volttron.client.known_identities import CONFIGURATION_STORE, PLATFORM_DRIVER
-from volttron.utils import jsonapi
+
 from volttrontesting.platformwrapper import PlatformWrapper
 
 MODBUS_TEST_IP = "MODBUS_TEST_IP"
@@ -23,7 +24,7 @@ def test_get_point(publish_agent):
 
 
 def test_set_point(publish_agent):
-    point_name = "SupplyTemp"
+    point_name = "SecondStageCoolingDemandSetPoint"
     point_val = 42
     publish_agent.vip.rpc.call(PLATFORM_DRIVER, "set_point", "modbus", point_name,
                                point_val).get(timeout=10)
@@ -38,21 +39,6 @@ def publish_agent(volttron_instance: PlatformWrapper):
     assert vi is not None
     assert vi.is_running()
 
-    config = {
-        "driver_scrape_interval": 0.05,
-        "publish_breadth_first_all": "false",
-        "publish_depth_first": "false",
-        "publish_breadth_first": "false"
-    }
-    puid = vi.install_agent(agent_dir="volttron-platform-driver",
-                            config_file=config,
-                            start=False,
-                            vip_identity=PLATFORM_DRIVER)
-    assert puid is not None
-    gevent.sleep(1)
-    assert vi.start_agent(puid)
-    assert vi.is_agent_running(puid)
-
     # create the publish agent
     publish_agent = volttron_instance.build_agent()
     assert publish_agent.core.identity
@@ -62,17 +48,41 @@ def publish_agent(volttron_instance: PlatformWrapper):
     volttron_instance.add_capabilities(publish_agent.core.publickey, capabilities)
 
     # Add Modbus Driver to Platform Driver
-    registry_config_string = """Volttron Point Name,Units,Writable,Point Address,Notes,Modbus Register,Multiplier
-    SupplyTemp,degC,FALSE,0,,>H,100
-    Demand,%,FALSE,26,,>H,1
-    SecondStageCoolingDemandSetPoint,None,TRUE,14,,>H,1"""
-
+    registry_config = [
+        {
+            "Volttron Point Name": "SupplyTemp",
+            "Units": "degC",
+            "Writable": "FALSE",
+            "Point Address": "0",
+            "Notes": "",
+            "Modbus Register": ">H",
+            "Multiplier": "100"
+        },
+        {
+            "Volttron Point Name": "Demand",
+            "Units": "%",
+            "Writable": "FALSE",
+            "Point Address": "26",
+            "Notes": "",
+            "Modbus Register": ">H",
+            "Multiplier": "1"
+        },
+        {
+            "Volttron Point Name": "SecondStageCoolingDemandSetPoint",
+            "Units": "None",
+            "Writable": "TRUE",
+            "Point Address": "14",
+            "Notes": "",
+            "Modbus Register": ">H",
+            "Multiplier": "1"
+        }
+    ]
     publish_agent.vip.rpc.call(CONFIGURATION_STORE,
                                "manage_store",
                                PLATFORM_DRIVER,
                                "modbus.csv",
-                               registry_config_string,
-                               config_type="csv")
+                               json.dumps(registry_config),
+                               config_type="json")
     device_address = os.environ.get(MODBUS_TEST_IP)
     driver_config = {
         "driver_config": {
@@ -92,10 +102,21 @@ def publish_agent(volttron_instance: PlatformWrapper):
                                "manage_store",
                                PLATFORM_DRIVER,
                                "devices/modbus",
-                               jsonapi.dumps(driver_config),
+                               json.dumps(driver_config),
                                config_type='json')
 
-    gevent.sleep(120)
+    gevent.sleep(20)
+
+    puid = vi.install_agent(agent_dir="volttron-platform-driver",
+                            # config_file=config,
+                            start=False,
+                            vip_identity=PLATFORM_DRIVER)
+    assert puid is not None
+    gevent.sleep(1)
+    assert vi.start_agent(puid)
+    assert vi.is_agent_running(puid)
+
+    gevent.sleep(20)
 
     yield publish_agent
 

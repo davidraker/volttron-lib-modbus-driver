@@ -1,14 +1,15 @@
+import gevent
+import json
 import logging
+import pytest
 import socket
 import time
-import gevent
-import pytest
 
 from random import randint
 from struct import pack, unpack
 
 from volttron.client.known_identities import CONFIGURATION_STORE, PLATFORM_DRIVER
-from volttron.utils import jsonapi, setup_logging
+from volttron.utils import setup_logging
 from volttrontesting.platformwrapper import PlatformWrapper
 
 from . import helpers
@@ -59,21 +60,34 @@ REGISTERS_DICT = {
     "LittleLong": (2**64) // 2 - 1
 }
 
-REGISTRY_CONFIG_STRING = """Volttron Point Name,Units,Modbus Register,Writable,Point Address
-    BigUShort,PPM,>H,TRUE,0
-    BigUInt,PPM,>I,TRUE,1
-    BigULong,PPM,>Q,TRUE,3
-    BigShort,PPM,>h,TRUE,7
-    BigInt,PPM,>i,TRUE,8
-    BigFloat,PPM,>f,TRUE,10
-    BigLong,PPM,>q,TRUE,12
-    LittleUShort,PPM,<H,TRUE,100
-    LittleUInt,PPM,<I,TRUE,101
-    LittleULong,PPM,<Q,TRUE,103
-    LittleShort,PPM,<h,TRUE,107
-    LittleInt,PPM,<i,TRUE,108
-    LittleFloat,PPM,<f,TRUE,110
-    LittleLong,PPM,<q,TRUE,112"""
+REGISTRY_CONFIG = [{"Volttron Point Name": "BigUShort", "Units": "PPM", "Modbus Register": ">H", "Writable": "TRUE",
+                    "Point Address": "0"},
+                   {"Volttron Point Name": "BigUInt", "Units": "PPM", "Modbus Register": ">I", "Writable": "TRUE",
+                    "Point Address": "1"},
+                   {"Volttron Point Name": "BigULong", "Units": "PPM", "Modbus Register": ">Q", "Writable": "TRUE",
+                    "Point Address": "3"},
+                   {"Volttron Point Name": "BigShort", "Units": "PPM", "Modbus Register": ">h", "Writable": "TRUE",
+                    "Point Address": "7"},
+                   {"Volttron Point Name": "BigInt", "Units": "PPM", "Modbus Register": ">i", "Writable": "TRUE",
+                    "Point Address": "8"},
+                   {"Volttron Point Name": "BigFloat", "Units": "PPM", "Modbus Register": ">f", "Writable": "TRUE",
+                    "Point Address": "10"},
+                   {"Volttron Point Name": "BigLong", "Units": "PPM", "Modbus Register": ">q", "Writable": "TRUE",
+                    "Point Address": "12"},
+                   {"Volttron Point Name": "LittleUShort", "Units": "PPM", "Modbus Register": "<H",
+                    "Writable": "TRUE", "Point Address": "100"},
+                   {"Volttron Point Name": "LittleUInt", "Units": "PPM", "Modbus Register": "<I",
+                    "Writable": "TRUE", "Point Address": "101"},
+                   {"Volttron Point Name": "LittleULong", "Units": "PPM", "Modbus Register": "<Q",
+                    "Writable": "TRUE", "Point Address": "103"},
+                   {"Volttron Point Name": "LittleShort", "Units": "PPM", "Modbus Register": "<h",
+                    "Writable": "TRUE", "Point Address": "107"},
+                   {"Volttron Point Name": "LittleInt", "Units": "PPM", "Modbus Register": "<i", "Writable": "TRUE",
+                    "Point Address": "108"},
+                   {"Volttron Point Name": "LittleFloat", "Units": "PPM", "Modbus Register": "<f",
+                    "Writable": "TRUE", "Point Address": "110"},
+                   {"Volttron Point Name": "LittleLong", "Units": "PPM", "Modbus Register": "<q",
+                    "Writable": "TRUE", "Point Address": "112"}]
 
 DRIVER_CONFIG = {
     "driver_config": {
@@ -111,6 +125,8 @@ def publish_agent(volttron_instance: PlatformWrapper):
     assert vi.start_agent(puid)
     assert vi.is_agent_running(puid)
 
+    gevent.sleep(20)
+
     # create the publish agent
     publish_agent = volttron_instance.build_agent()
     assert publish_agent.core.identity
@@ -125,17 +141,17 @@ def publish_agent(volttron_instance: PlatformWrapper):
                                "manage_store",
                                PLATFORM_DRIVER,
                                "modbus.csv",
-                               REGISTRY_CONFIG_STRING,
-                               config_type="csv")
+                               json.dumps(REGISTRY_CONFIG),
+                               config_type="json")
 
     publish_agent.vip.rpc.call(CONFIGURATION_STORE,
                                "manage_store",
                                PLATFORM_DRIVER,
                                "devices/modbus",
-                               jsonapi.dumps(DRIVER_CONFIG),
+                               json.dumps(DRIVER_CONFIG),
                                config_type='json')
 
-    gevent.sleep(60)
+    gevent.sleep(20)
 
     yield publish_agent
 
