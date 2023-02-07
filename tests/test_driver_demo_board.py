@@ -46,6 +46,7 @@ def publish_agent(volttron_instance: PlatformWrapper):
 
     capabilities = {"edit_config_store": {"identity": PLATFORM_DRIVER}}
     volttron_instance.add_capabilities(publish_agent.core.publickey, capabilities)
+    gevent.sleep(1)
 
     # Add Modbus Driver to Platform Driver
     registry_config = [
@@ -82,7 +83,7 @@ def publish_agent(volttron_instance: PlatformWrapper):
                                PLATFORM_DRIVER,
                                "modbus.csv",
                                json.dumps(registry_config),
-                               config_type="json")
+                               config_type="json").get(timeout=10)
     device_address = os.environ.get(MODBUS_TEST_IP)
     driver_config = {
         "driver_config": {
@@ -103,9 +104,7 @@ def publish_agent(volttron_instance: PlatformWrapper):
                                PLATFORM_DRIVER,
                                "devices/modbus",
                                json.dumps(driver_config),
-                               config_type='json')
-
-    gevent.sleep(20)
+                               config_type='json').get(timeout=10)
 
     puid = vi.install_agent(agent_dir="volttron-platform-driver",
                             # config_file=config,
@@ -115,8 +114,6 @@ def publish_agent(volttron_instance: PlatformWrapper):
     gevent.sleep(1)
     assert vi.start_agent(puid)
     assert vi.is_agent_running(puid)
-
-    gevent.sleep(20)
 
     yield publish_agent
 
