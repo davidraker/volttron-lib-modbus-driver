@@ -14,7 +14,7 @@ ignore_missing_imports = true
 
 [tool.poetry]
 name = "volttron-lib-modbus-driver"
-version = "0.0.0"
+version = "0.1.0"
 description = "Modbus driver supported and maintained by the Volttron team."
 authors = ["Mark Bonicillo <volttron@pnnl.gov>"]
 license = "Apache License 2.0"
