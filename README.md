@@ -3,54 +3,35 @@
 ![Passing?](https://github.com/VOLTTRON/volttron-lib-modbus-driver/actions/workflows/run-tests.yml/badge.svg)
 [![pypi version](https://img.shields.io/pypi/v/volttron-lib-modbus-driver.svg)](https://pypi.org/project/volttron-lib-modbus-driver/)
 
-VOLTTRON’s modbus driver supports the Modbus over TCP/IP protocol only.
+> **Note**
+> VOLTTRON’s modbus driver supports the Modbus over TCP/IP protocol only.
 
-# Prerequisites
-
-* Python 3.8
+## Requirements
+* python >=3.8
+* volttron >= 10.0
+* pymodbus >= 2.3.5
 
 # Installation
 
-1. Create and activate a virtual environment.
+Before installing the VOLTTRON Modbus driver, VOLTTRON should be installed and running.
+Its virtual environment should be active. Information on how to install
+of the VOLTTRON platform can be found [here](https://github.com/eclipse-volttron/volttron-core).
 
-    ```shell
-    python -m venv env
-    source env/bin/activate
-    ```
-
-1. Install volttron and start the platform.
-
-    ```shell
-    pip install volttron
-
-    # Start platform with output going to volttron.log
-    volttron -vv -l volttron.log &
-    ```
-
-1. Install the volttron platform driver:
+1. If it is not already, install the VOLTTRON Platform Driver Agent:
 
     ```shell
     vctl install volttron-platform-driver --vip-identity platform.driver --start
     ```
 
-1. Install the volttron-lib-modbus-driver library.
+2. Install the volttron-lib-modbus-driver library.
 
     ```shell
     pip install volttron-lib-modbus-driver
     ```
 
-1. Install the driver onto the Platform Driver.
+3. Store device and registry files for the Modbus device to the Platform Driver configuration store:
 
-    Installing a driver in the Platform Driver Agent requires adding copies of the device configuration and registry configuration files to the Platform Driver’s configuration store.
-
-    Create a config directory and navigate to it:
-
-    ```shell
-    mkdir config
-    cd config
-    ```
-
-    Navigate to the config directory and create a driver configuration file called `modbus.config`. There are three arguments for the driver_config section of the device configuration file:
+    Create a driver configuration file called `modbus.config`. There are three arguments for the driver_config section of the device configuration file:
 
     * device_address:  IP Address of the device.
 
@@ -80,15 +61,15 @@ VOLTTRON’s modbus driver supports the Modbus over TCP/IP protocol only.
 
     The following columns are required for each row:
 
-    * Volttron Point Name - The name by which the platform and agents running on the platform will refer to this point. For instance, if the Volttron Point Name is HeatCall1 (and using the example device configuration above) then an agent would use pnnl/isb2/hvac1/HeatCall1 to refer to the point when using the RPC interface of the actuator agent.
+    * Volttron Point Name - The name by which the platform and agents will refer to this point.
 
     * Units - Used for meta data when creating point information on the historian.
 
-    * Modbus Register - A string representing how to interpret the data register and how to read it from the device. The string takes two forms:
+    * Modbus Register - A string representing how to interpret the binary format of the data register. The string takes two forms:
 
         * “BOOL” for coils and discrete inputs.
 
-        * A format string for the Python struct module. See the Python3 Struct docs for full documentation. The supplied format string must only represent one value. See the documentation of your device to determine how to interpret the registers. Some Examples:
+        * A format string for the Python struct module. See the [Python3 Struct docs](http://docs.python.org/3/library/struct.html) for full documentation. The supplied format string must only represent one value. See the documentation of your device to determine how to interpret the registers. Some Examples:
 
         * “>f” - A big endian 32-bit floating point number.
 
@@ -96,7 +77,7 @@ VOLTTRON’s modbus driver supports the Modbus over TCP/IP protocol only.
 
         * “>l” - A big endian 32-bit integer.
 
-    * Writable - Either TRUE or FALSE. Determines if the point can be written to. Only points labeled TRUE can be written to through the ActuatorAgent.
+    * Writable - Either TRUE or FALSE. Determines if the point can be written to.
 
     * Point Address - Modbus address of the point. Cannot include any offset value, it must be the exact value of the address.
 
@@ -132,7 +113,7 @@ VOLTTRON’s modbus driver supports the Modbus over TCP/IP protocol only.
     vctl config store platform.driver modbus.csv modbus.csv --csv
     ```
 
-1. Observe Data
+4. Observe Data
 
     To see data being published to the bus, install a [Listener Agent](https://pypi.org/project/volttron-listener/):
 

@@ -4,49 +4,32 @@
 Modbus Driver
 =============
 
+The VOLTTRON Modbus Driver interface allows the Platform Driver Agent to act as a client in communication with a
+ModbusTCP server. First released in 1979 for use with PLCs, Modbus has become a common protocol for interacting
+with remote devices. More information on the Modbus Protocol can be found `here <https://en.wikipedia.org/wiki/Modbus>`_
 
+.. attention::
 
-VOLTTRON's modbus driver supports the Modbus over TCP/IP protocol only. For Modbus RTU support, see VOLTTRON's
-`Modbus-TK driver <Modbus-TK-Driver>`.
-
-`About Modbus protocol <https://en.wikipedia.org/wiki/Modbus>`_
+    VOLTTRON's modbus driver supports the ModbusTCP protocol only. For ModbusRTU support, see VOLTTRON's
+    `Modbus-TK driver <Modbus-TK-Driver>`.
 
 
 .. _Modbus-Config:
 
-Modbus Driver Configuration
+Modbus Device Configuration
 ===========================
 
-Requirements
-------------
-The Modbus driver requires the pymodbus package. This package can be installed in an activated environment with:
+The Modbus device configuration file follows the :ref:`device configuration file convention <Device-Configuration-File>`.
+All devices using the Modbus interface should use "modbus" as the value of the ``driver_type`` key. Reference
+:ref:`device configuration file convention <Device-Configuration-File>` for information on other standard device
+configuration keys. Modbus specific configurations are contained in `driver_config`, a key-value dictionary used to
+establish communication with a ModbusTCP server: The `driver_config` dictionary accepts three keys:
 
-.. code-block:: bash
+:device_address: IP Address of the device. (required)
+:port: Port the device is listening on. (Defaults to 502 --- the standard Modbus port)
+:slave_id: Slave ID of the device. (Defaults to 0.  Use 0 for no slave.)
 
-    pip install pymodbus
-
-Alternatively this requirement can be installed using :ref:`bootstrap.py <Platform-Installation>` with the ``--drivers``
-option:
-
-.. code-block:: bash
-
-    python3 bootstrap.py --drivers
-
-
-Driver Configuration
---------------------
-
-There are three arguments for the `driver_config` section of the device configuration file:
-
-    - **device_address** - IP Address of the device.
-    - **port** - Port the device is listening on.  Defaults to 502 which is the standard port for Modbus devices.
-    - **slave_id** - Slave ID of the device. Defaults to 0.  Use 0 for no slave.
-
-The remaining values are as follows:
-
-
-
-Here is an example device configuration file:
+A typical Modbus device configuration will have the form:
 
 .. code-block:: json
 
@@ -61,56 +44,45 @@ Here is an example device configuration file:
         "heart_beat_point": "heartbeat"
     }
 
-A sample MODBUS configuration file can be found in the VOLTTRON repository in
-`examples/configurations/drivers/modbus.config`
+This sample Modbus device configuration file can also be found in the volttron-lib-modbus-driver repository
+`here <https://raw.githubusercontent.com/eclipse-volttron/volttron-lib-fake-driver/main/modbus_example.config>`_
 
 
 .. _Modbus-Registry-Configuration:
 
 Modbus Registry Configuration File
 ----------------------------------
+The driver's registry configuration file specifies information related to each point on the device, in a CSV or JSON
+file. More detailed information of driver registry files may be found :ref:`here <Registry-Configuration-File>`.
+The driver’s registry configuration must contain the following items for each point:
 
-The registry configuration file is a `CSV <https://en.wikipedia.org/wiki/Comma-separated_values>`_ file.  Each row
-configures a point on the device.
+:Volttron Point Name: The name by which the platform and agents running on the platform will refer to this point.
+:Units: Used for meta data when creating point information on the historian.
+:Modbus Register: A string representing how to interpret the binary format of the data register.
+  The string takes two forms:
 
-The following columns are required for each row:
+    + "BOOL" for coils and discrete inputs.
+    + A format string for the Python struct module. See
+      `the Python3 Struct docs <http://docs.python.org/3/library/struct.html>`_ for full documentation.  The
+      supplied format string must only represent one value. See the documentation of your device to determine how to
+      interpret the registers. Some Examples:
 
-    - **Volttron Point Name** - The name by which the platform and agents running on the platform will refer to this
-      point. For instance, if the Volttron Point Name is HeatCall1 (and using the example device configuration above)
-      then an agent would use `pnnl/isb2/hvac1/HeatCall1` to refer to the point when using the RPC interface of the
-      actuator agent.
-    - **Units** - Used for meta data when creating point information on the historian.
-    - **Modbus Register** - A string representing how to interpret the data register and how to read it from the device.
-      The string takes two forms:
+        * ">f" - A big endian 32-bit floating point number.
+        * "<H" - A little endian 16-bit unsigned integer.
+        * ">l" - A big endian 32-bit integer.
 
-        + "BOOL" for coils and discrete inputs.
-        + A format string for the Python struct module. See
-          `the Python3 Struct docs <http://docs.python.org/3/library/struct.html>`_ for full documentation.  The
-          supplied format string must only represent one value. See the documentation of your device to determine how to
-          interpret the registers. Some Examples:
+:Writable: Either `TRUE` or `FALSE`.  Determines if the point can be written to.
+:Point Address: Modbus address of the point. Cannot include any offset value, it must be the exact value of the address.
+:Mixed Endian: (Optional) Either `TRUE` or `FALSE`. If true, this will reverse the order of the Modbus registers that
+ make up this point before parsing the value or writing it out to the device.  This setting has no effect on bit values.
+:Default Value: The default value for the point.  When the point is reverted, it will change back to this value.
+ If this value is missing it will revert to the last known value not set by an agent.
 
-            * ">f" - A big endian 32-bit floating point number.
-            * "<H" - A little endian 16-bit unsigned integer.
-            * ">l" - A big endian 32-bit integer.
-
-    - **Writable** - Either `TRUE` or `FALSE`.  Determines if the point can be written to. Only points labeled
-      **TRUE** can be written to through the ActuatorAgent.
-    - **Point Address** - Modbus address of the point. Cannot include any offset value, it must be the exact value of
-      the address.
-    - **Mixed Endian** - (Optional) Either `TRUE` or `FALSE`.  For mixed endian values.  This will reverse the order
-      of the Modbus registers that make up this point before parsing the value or writing it out to the device.  Has no
-      effect on bit values.
-
-The following column is optional:
-
-    - **Default Value** - The default value for the point.  When the point is reverted by an agent it will change back
-      to this value.  If this value is missing it will revert to the last known value not set by an agent.
-
-Any additional columns will be ignored.  It is common practice to include a `Point Name` or `Reference Point Name` to
+Any additional fields will be ignored.  It is common practice to include a `Point Name` or `Reference Point Name` to
 include the device documentation's name for the point and `Notes` and `Unit Details` for additional information
 about a point.
 
-The following is an example of a Modbus registry configuration file:
+The following is an example of a Modbus registry configuration file (as CSV):
 
 .. csv-table:: Catalyst 371
         :header: Reference Point Name,Volttron Point Name,Units,Units Details,Modbus Register,Writable,Point Address,Default Value,Notes
@@ -127,6 +99,6 @@ The following is an example of a Modbus registry configuration file:
         HeatCall1,HeatCall1,On / Off,on/off,BOOL,FALSE,1113,,Status indicator of heating stage 1 need
         HeartBeat,heartbeat,On / Off,on/off,BOOL,FALSE,1114,,Status indicator of heating stage 2 need
 
-A sample Modbus registry file can be found
-`here <https://raw.githubusercontent.com/VOLTTRON/volttron/c57569bd9e71eb32afefe8687201d674651913ed/examples/configurations/drivers/catalyst371.csv>`_
-or in the VOLTTRON repository in `examples/configurations/drivers/catalyst371.csv`
+Another example registry file can also be found in the volttron-lib-modbus-driver repository
+`here <https://raw.githubusercontent.com/eclipse-volttron/volttron-lib-fake-driver/main/modbus_example_registry.csv>`_.
+
