@@ -6,10 +6,19 @@
 > **Note**
 > VOLTTRON’s modbus driver supports the Modbus over TCP/IP protocol only.
 
-## Requirements
+
+## Requires
+
 * python >=3.8
 * volttron >= 10.0
+* volttron-lib-base-driver
 * pymodbus >= 2.3.5
+
+
+# Documentation
+More detailed documentation can be found on [ReadTheDocs](https://volttron.readthedocs.io/en/modular/). The RST source
+of the documentation for this component is located in the "docs" directory of this repository.
+
 
 # Installation
 
