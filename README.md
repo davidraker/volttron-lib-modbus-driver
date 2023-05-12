@@ -26,10 +26,10 @@ eval "$(pyenv init -)"
 # install Python 3.8
 pyenv install 3.8.10
 
-# make it available globally
-pyenv global system 3.8.10
-```
-</details>
+* python >=3.10
+* volttron >= 10.0
+* volttron-lib-base-driver
+* pymodbus >= 2.3.5
 
 
 ## Poetry
