@@ -9,7 +9,7 @@
 
 ## Requires
 
-* python >=3.8
+* python >=3.10
 * volttron >= 10.0
 * volttron-lib-base-driver
 * pymodbus >= 2.3.5
