@@ -1,39 +1,25 @@
 # -*- coding: utf-8 -*- {{{
-# vim: set fenc=utf-8 ft=python sw=4 ts=4 sts=4 et:
+# ===----------------------------------------------------------------------===
 #
-# Copyright 2020, Battelle Memorial Institute.
+#                 Installable Component of Eclipse VOLTTRON
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
+# ===----------------------------------------------------------------------===
 #
-# http://www.apache.org/licenses/LICENSE-2.0
+# Copyright 2022 Battelle Memorial Institute
+#
+# Licensed under the Apache License, Version 2.0 (the "License"); you may not
+# use this file except in compliance with the License. You may obtain a copy
+# of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
 #
 # Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+# WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+# License for the specific language governing permissions and limitations
+# under the License.
 #
-# This material was prepared as an account of work sponsored by an agency of
-# the United States Government. Neither the United States Government nor the
-# United States Department of Energy, nor Battelle, nor any of their
-# employees, nor any jurisdiction or organization that has cooperated in the
-# development of these materials, makes any warranty, express or
-# implied, or assumes any legal liability or responsibility for the accuracy,
-# completeness, or usefulness or any information, apparatus, product,
-# software, or process disclosed, or represents that its use would not infringe
-# privately owned rights. Reference herein to any specific commercial product,
-# process, or service by trade name, trademark, manufacturer, or otherwise
-# does not necessarily constitute or imply its endorsement, recommendation, or
-# favoring by the United States Government or any agency thereof, or
-# Battelle Memorial Institute. The views and opinions of authors expressed
-# herein do not necessarily state or reflect those of the
-# United States Government or any agency thereof.
-#
-# PACIFIC NORTHWEST NATIONAL LABORATORY operated by
-# BATTELLE for the UNITED STATES DEPARTMENT OF ENERGY
-# under Contract DE-AC05-76RL01830
+# ===----------------------------------------------------------------------===
 # }}}
 
 import logging
@@ -58,23 +44,8 @@ from volttron.driver.base.interfaces import (
 )
 from volttron.utils.logs import setup_logging
 
-
-@contextmanager
-def modbus_client(address, port):
-    with socket_lock():
-        with closing(SyncModbusClient(address, port)) as client:
-            yield client
-
-
-modbus_logger = logging.getLogger("pymodbus")
-modbus_logger.setLevel(logging.WARNING)
-
 setup_logging()
 _log = logging.getLogger(__name__)
-
-MODBUS_REGISTER_SIZE = 2
-MODBUS_READ_MAX = 100
-PYMODBUS_REGISTER_STRUCT = struct.Struct('>H')
 
 
 class ModbusInterfaceException(ModbusException):
@@ -183,9 +154,17 @@ class ModbusByteRegister(ModbusRegisterBase):
         self.python_type = struct_types[0]
 
         self.mixed_endian = mixed_endian
+        self.modbus_register_size = 2
+        self.pymodbus_register_struct = struct.Struct('>H')
+
+    @contextmanager
+    def modbus_client(self, address, port):
+        with socket_lock():
+            with closing(SyncModbusClient(address, port)) as client:
+                yield client
 
     def get_register_count(self):
-        return self.parse_struct.size // MODBUS_REGISTER_SIZE
+        return self.parse_struct.size // self.modbus_register_size
 
     def parse_value(self, starting_address, byte_stream):
         # find the bytes we care about
@@ -198,13 +177,13 @@ class ModbusByteRegister(ModbusRegisterBase):
 
         if self.mixed_endian:
             register_values = []
-            for i in range(0, len(target_bytes), PYMODBUS_REGISTER_STRUCT.size):
-                register_values.extend(PYMODBUS_REGISTER_STRUCT.unpack_from(target_bytes, i))
+            for i in range(0, len(target_bytes), self.pymodbus_register_struct.size):
+                register_values.extend(self.pymodbus_register_struct.unpack_from(target_bytes, i))
             register_values.reverse()
 
             target_bytes = ""
             target_bytes = bytes.join(
-                b'', [PYMODBUS_REGISTER_STRUCT.pack(value) for value in register_values])
+                b'', [self.pymodbus_register_struct.pack(value) for value in register_values])
             # for value in register_values:
             #     target_bytes += PYMODBUS_REGISTER_STRUCT.pack(value).decode('utf-8')
 
@@ -213,11 +192,11 @@ class ModbusByteRegister(ModbusRegisterBase):
     def get_state(self, client):
         if self.read_only:
             response = client.read_input_registers(self.address,
-                                                   count=self.get_register_count(),
+                                                   self.get_register_count(),
                                                    unit=self.slave_id)
         else:
             response = client.read_holding_registers(self.address,
-                                                     count=self.get_register_count(),
+                                                     self.get_register_count(),
                                                      unit=self.slave_id)
 
         if response is None:
@@ -234,8 +213,8 @@ class ModbusByteRegister(ModbusRegisterBase):
         if not self.read_only:
             value_bytes = self.parse_struct.pack(value)
             register_values = []
-            for i in range(0, len(value_bytes), PYMODBUS_REGISTER_STRUCT.size):
-                register_values.extend(PYMODBUS_REGISTER_STRUCT.unpack_from(value_bytes, i))
+            for i in range(0, len(value_bytes), self.pymodbus_register_struct.size):
+                register_values.extend(self.pymodbus_register_struct.unpack_from(value_bytes, i))
             if self.mixed_endian:
                 register_values.reverse()
             client.write_registers(self.address, register_values, unit=self.slave_id)
@@ -247,7 +226,15 @@ class Modbus(BasicRevert, BaseInterface):
 
     def __init__(self, **kwargs):
         super(Modbus, self).__init__(**kwargs)
-        self.build_ranges_map()
+        self.register_ranges = {
+            ('byte', True): [],
+            ('byte', False): [],
+            ('bit', True): [],
+            ('bit', False): []
+        }
+        self.modbus_read_max = 100
+
+    ##### Implemented abstract methods from BaseInterface
 
     def configure(self, config_dict, registry_config_str):
         self.slave_id = config_dict.get("slave_id", 0)
@@ -255,13 +242,16 @@ class Modbus(BasicRevert, BaseInterface):
         self.port = config_dict.get("port", Defaults.Port)
         self.parse_config(registry_config_str)
 
-    def build_ranges_map(self):
-        self.register_ranges = {
-            ('byte', True): [],
-            ('byte', False): [],
-            ('bit', True): [],
-            ('bit', False): []
-        }
+    def get_point(self, point_name):
+        register = self.get_register_by_name(point_name)
+        with self.modbus_client(self.ip_address, self.port) as client:
+            try:
+                result = register.get_state(client)
+            except (ConnectionException, ModbusIOException, ModbusInterfaceException):
+                result = None
+        return result
+
+    ##### Overriden methods from BaseInterface
 
     def insert_register(self, register):
         super(Modbus, self).insert_register(register)
@@ -275,50 +265,41 @@ class Modbus(BasicRevert, BaseInterface):
         start, end = register.address, register.address + register_count - 1
         register_range.append([start, end, [register]])
 
-    def merge_register_ranges(self):
-        """
-        Merges any adjacent registers for more efficient scraping. May only be called after all registers have been
-        inserted."""
-        for key, register_ranges in self.register_ranges.items():
-            if not register_ranges:
-                continue
-            register_ranges.sort()
-            result = []
-            current = register_ranges[0]
-            for register_range in register_ranges[1:]:
-                if register_range[0] > current[1] + 1:
-                    result.append(current)
-                    current = register_range
-                    continue
+    ##### Uses implementation from BasicRevert for following BaseInterface abstract methods:
+    ##### set_point, scrape_all, revert_all, revert_point
 
-                current[1] = register_range[1]
-                current[2].extend(register_range[2])
-
-            result.append(current)
-
-            self.register_ranges[key] = result
-
-    def get_point(self, point_name):
-        register = self.get_register_by_name(point_name)
-        with modbus_client(self.ip_address, self.port) as client:
-            try:
-                result = register.get_state(client)
-            except (ConnectionException, ModbusIOException, ModbusInterfaceException):
-                result = None
-        return result
+    ##### Implemented abstract methods from BasicRevert
 
     def _set_point(self, point_name, value):
         register = self.get_register_by_name(point_name)
         if register.read_only:
             raise IOError("Trying to write to a point configured read only: " + point_name)
 
-        with modbus_client(self.ip_address, self.port) as client:
+        with self.modbus_client(self.ip_address, self.port) as client:
             try:
                 result = register.set_state(client, value)
             except (ConnectionException, ModbusIOException, ModbusInterfaceException) as ex:
                 raise IOError("Error encountered trying to write to point {}: {}".format(
                     point_name, ex))
         return result
+
+    def _scrape_all(self):
+        result_dict = {}
+        with self.modbus_client(self.ip_address, self.port) as client:
+            try:
+
+                result_dict.update(self.scrape_byte_registers(client, True))
+                result_dict.update(self.scrape_byte_registers(client, False))
+
+                result_dict.update(self.scrape_bit_registers(client, True))
+                result_dict.update(self.scrape_bit_registers(client, False))
+            except (ConnectionException, ModbusIOException, ModbusInterfaceException) as e:
+                raise DriverInterfaceError("Failed to scrape device at " + self.ip_address + ":" +
+                                           str(self.port) + " ID: " + str(self.slave_id) + str(e))
+
+        return result_dict
+
+    ##### Helper methods
 
     def scrape_byte_registers(self, client, read_only):
         result_dict = {}
@@ -330,8 +311,8 @@ class Modbus(BasicRevert, BaseInterface):
             start, end, registers = register_range
             result = b''
 
-            for group in range(start, end + 1, MODBUS_READ_MAX):
-                count = min(end - group + 1, MODBUS_READ_MAX)
+            for group in range(start, end + 1, self.modbus_read_max):
+                count = min(end - group + 1, self.modbus_read_max)
                 response = read_func(group, count, unit=self.slave_id)
                 if response is None:
                     raise ModbusInterfaceException("pymodbus returned None")
@@ -359,8 +340,8 @@ class Modbus(BasicRevert, BaseInterface):
 
             result = []
 
-            for group in range(start, end + 1, MODBUS_READ_MAX):
-                count = min(end - group + 1, MODBUS_READ_MAX)
+            for group in range(start, end + 1, self.modbus_read_max):
+                count = min(end - group + 1, self.modbus_read_max)
                 response = client.read_discrete_inputs(group, count, unit=self.slave_id) if read_only else \
                     client.read_coils(group, count, unit=self.slave_id)
                 if response is None:
@@ -373,22 +354,6 @@ class Modbus(BasicRevert, BaseInterface):
                 point = register.point_name
                 value = register.parse_value(start, result)
                 result_dict[point] = value
-
-        return result_dict
-
-    def _scrape_all(self):
-        result_dict = {}
-        with modbus_client(self.ip_address, self.port) as client:
-            try:
-
-                result_dict.update(self.scrape_byte_registers(client, True))
-                result_dict.update(self.scrape_byte_registers(client, False))
-
-                result_dict.update(self.scrape_bit_registers(client, True))
-                result_dict.update(self.scrape_bit_registers(client, False))
-            except (ConnectionException, ModbusIOException, ModbusInterfaceException) as e:
-                raise DriverInterfaceError("Failed to scrape device at " + self.ip_address + ":" +
-                                           str(self.port) + " ID: " + str(self.slave_id) + str(e))
 
         return result_dict
 
@@ -450,3 +415,32 @@ class Modbus(BasicRevert, BaseInterface):
 
         # Merge adjacent ranges for efficiency.
         self.merge_register_ranges()
+
+    def merge_register_ranges(self):
+        """
+        Merges any adjacent registers for more efficient scraping. May only be called after all registers have been
+        inserted."""
+        for key, register_ranges in self.register_ranges.items():
+            if not register_ranges:
+                continue
+            register_ranges.sort()
+            result = []
+            current = register_ranges[0]
+            for register_range in register_ranges[1:]:
+                if register_range[0] > current[1] + 1:
+                    result.append(current)
+                    current = register_range
+                    continue
+
+                current[1] = register_range[1]
+                current[2].extend(register_range[2])
+
+            result.append(current)
+
+            self.register_ranges[key] = result
+
+    @contextmanager
+    def modbus_client(self, address, port):
+        with socket_lock():
+            with closing(SyncModbusClient(address, port)) as client:
+                yield client

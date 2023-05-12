@@ -1,141 +1,165 @@
 # volttron-lib-modbus-driver
 
-![Passing?](https://github.com/VOLTTRON/volttron-lib-modbus-driver/actions/workflows/run_tests.yml/badge.svg)
+[![Eclipse VOLTTRON™](https://img.shields.io/badge/Eclips%20VOLTTRON--red.svg)](https://volttron.readthedocs.io/en/latest/)
+![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)
+![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
+![Passing?](https://github.com/VOLTTRON/volttron-lib-modbus-driver/actions/workflows/run-tests.yml/badge.svg)
 [![pypi version](https://img.shields.io/pypi/v/volttron-lib-modbus-driver.svg)](https://pypi.org/project/volttron-lib-modbus-driver/)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-# Prerequisites
+> **Note**
+> VOLTTRON’s modbus driver supports the Modbus over TCP/IP protocol only.
 
-* Python 3.8
-* Poetry 1.2.2
 
-## Python
-
-<details>
-<summary>To install Python 3.8, we recommend using <a href="https://github.com/pyenv/pyenv"><code>pyenv</code></a>.</summary>
-
-```bash
-# install pyenv
-git clone https://github.com/pyenv/pyenv ~/.pyenv
-
-# setup pyenv (you should also put these three lines in .bashrc or similar)
-export PATH="${HOME}/.pyenv/bin:${PATH}"
-export PYENV_ROOT="${HOME}/.pyenv"
-eval "$(pyenv init -)"
-
-# install Python 3.8
-pyenv install 3.8.10
+## Requires
 
 * python >=3.10
-* volttron >= 10.0
 * volttron-lib-base-driver
 * pymodbus >= 2.3.5
 
 
-## Poetry
+# Documentation
+More detailed documentation can be found on [ReadTheDocs](https://volttron.readthedocs.io/en/modular/). The RST source
+of the documentation for this component is located in the "docs" directory of this repository.
 
-This project uses `poetry` to install and manage dependencies. To install poetry,
-follow these [instructions](https://python-poetry.org/docs/master/#installation).
 
 # Installation
 
-With `pip`:
+Before installing, VOLTTRON should be installed and running.  Its virtual environment should be active.
+Information on how to install of the VOLTTRON platform can be found
+[here](https://github.com/eclipse-volttron/volttron-core).
 
-```shell
-python3.8 -m pip install volttron-lib-modbus-driver
+1. If it is not already, install the VOLTTRON Platform Driver Agent:
 
-# Develop mode
-python3.8 -m pip install --editable volttron-lib-modbus-driver
-```
+    ```shell
+    vctl install volttron-platform-driver --vip-identity platform.driver --start
+    ```
+
+2. Install the volttron-lib-modbus-driver library.
+
+    ```shell
+    pip install volttron-lib-modbus-driver
+    ```
+
+3. Store device and registry files for the Modbus device to the Platform Driver configuration store:
+
+    Create a driver configuration file called `modbus.config`. There are three arguments for the driver_config section of the device configuration file:
+
+    * device_address:  IP Address of the device.
+
+    * port: Port the device is listening on. Defaults to 502 which is the standard port for Modbus devices.
+
+    * slave_id:  Slave ID of the device. Defaults to 0. Use 0 for no slave.
+
+    This repo provides an example configuration in the file "modbus_example.config".
+
+    Here is an example device configuration file:
+
+    ```json
+    {
+        "driver_config": {"device_address": "10.0.0.4"},
+        "driver_type": "modbus",
+        "registry_config":"config://catalyst371.csv",
+        "interval": 120,
+        "timezone": "UTC",
+        "campus": "campus",
+        "building": "building",
+        "unit": "modbus1",
+        "heart_beat_point": "ESMMode"
+    }
+    ```
+
+    Create another file called `mobus.csv`. This CSV file will be your modbus registry configuration file. Each row configures a point on the device.
+
+    The following columns are required for each row:
+
+    * Volttron Point Name - The name by which the platform and agents will refer to this point.
+
+    * Units - Used for meta data when creating point information on the historian.
+
+    * Modbus Register - A string representing how to interpret the binary format of the data register. The string takes two forms:
+
+        * “BOOL” for coils and discrete inputs.
+
+        * A format string for the Python struct module. See the [Python3 Struct docs](http://docs.python.org/3/library/struct.html) for full documentation. The supplied format string must only represent one value. See the documentation of your device to determine how to interpret the registers. Some Examples:
+
+        * “>f” - A big endian 32-bit floating point number.
+
+        * “<H” - A little endian 16-bit unsigned integer.
+
+        * “>l” - A big endian 32-bit integer.
+
+    * Writable - Either TRUE or FALSE. Determines if the point can be written to.
+
+    * Point Address - Modbus address of the point. Cannot include any offset value, it must be the exact value of the address.
+
+    * Mixed Endian - (Optional) Either TRUE or FALSE. For mixed endian values. This will reverse the order of the Modbus registers that make up this point before parsing the value or writing it out to the device. Has no effect on bit values.
+
+    The following column is optional:
+
+    * Default Value - The default value for the point. When the point is reverted by an agent it will change back to this value. If this value is missing it will revert to the last known value not set by an agent.
+
+    Any additional columns will be ignored. It is common practice to include a Point Name or Reference Point Name to include the device documentation’s name for the point and Notes and Unit Details for additional information about a point.
+
+    The following is an example of a Modbus registry configuration file:
+
+    ```csv
+    Reference Point Name,Volttron Point Name,Units,Units Details,Modbus Register,Writable,Point Address,Default Value,Notes
+    CO2Sensor,ReturnAirCO2,PPM,0.00-2000.00,>f,FALSE,1001,,CO2 Reading 0.00-2000.0 ppm
+    CO2Stpt,ReturnAirCO2Stpt,PPM,1000.00 (default),>f,TRUE,1011,1000,Setpoint to enable demand control ventilation
+    Cool1Spd,CoolSupplyFanSpeed1,%,0.00 to 100.00 (75 default),>f,TRUE,1005,75,Fan speed on cool 1 call
+    Cool2Spd,CoolSupplyFanSpeed2,%,0.00 to 100.00 (90 default),>f,TRUE,1007,90,Fan speed on Cool2 Call
+    Damper,DamperSignal,%,0.00 - 100.00,>f,FALSE,1023,,Output to the economizer damper
+    DaTemp,DischargeAirTemperature,F,(-)39.99 to 248.00,>f,FALSE,1009,,Discharge air reading
+    ESMEconMin,ESMDamperMinPosition,%,0.00 to 100.00 (5 default),>f,TRUE,1013,5,Minimum damper position during the energy savings mode
+    FanPower,SupplyFanPower, kW,0.00 to 100.00,>f,FALSE,1015,,Fan power from drive
+    FanSpeed,SupplyFanSpeed,%,0.00 to 100.00,>f,FALSE,1003,,Fan speed from drive
+    HeatCall1,HeatCall1,On / Off,on/off,BOOL,FALSE,1113,,Status indicator of heating stage 1 need
+    HeartBeat,heartbeat,On / Off,on/off,BOOL,FALSE,1114,,Status indicator of heating stage 2 need
+    ```
+
+    Add modbus.csv and modbus.config to the configuration store:
+
+    ```
+    vctl config store platform.driver devices/campus/building/modbus modbus.config
+    vctl config store platform.driver modbus.csv modbus.csv --csv
+    ```
+
+4. Observe Data
+
+    To see data being published to the bus, install a [Listener Agent](https://pypi.org/project/volttron-listener/):
+
+    ```
+    vctl install volttron-listener --start
+    ```
+
+    Once installed, you should see the data being published by viewing the Volttron logs file that was created in step 2.
+    To watch the logs, open a separate terminal and run the following command:
+
+    ```
+    tail -f <path to folder containing volttron.log>/volttron.log
+    ```
 
 # Development
 
-## Environment
+Please see the following for contributing guidelines [contributing](https://github.com/eclipse-volttron/volttron-core/blob/develop/CONTRIBUTING.md).
 
-Set the environment to be in your project directory:
-
-```poetry config virtualenvs.in-project true```
-
-If you want to install all your dependencies, including dependencies to help with developing your agent, run this command:
-
-```poetry install```
-
-If you want to install only the dependencies needed to run your agent, run this command:
-
-```poetry install --no-dev```
-
-Activate the virtual environment:
-
-```shell
-# using Poetry
-poetry shell
-
-# using 'source' command
-source "$(poetry env info --path)/bin/activate"
-```
-
-## Source Control
-
-1. To use git to manage version control, create a new git repository in your local agent project.
-
-```git init```
-
-2. Then create a new repo in your Github or Gitlab account. Copy the URL that points to that new repo in
-your Github or Gitlab account. This will be known as our 'remote'.
-
-3. Add the remote (i.e. the new repo URL from your Github or Gitlab account) to your local repository. Run the following command:
-
-```git remote add origin <my github/gitlab URL>```
-
-When you push to your repo, note that the default branch is called 'main'.
+Please see the following helpful guide about [developing modular VOLTTRON agents](https://github.com/eclipse-volttron/volttron-core/blob/develop/DEVELOPING_ON_MODULAR.md)
 
 
-## Optional Configurations
+# Disclaimer Notice
 
-### Precommit
+This material was prepared as an account of work sponsored by an agency of the
+United States Government.  Neither the United States Government nor the United
+States Department of Energy, nor Battelle, nor any of their employees, nor any
+jurisdiction or organization that has cooperated in the development of these
+materials, makes any warranty, express or implied, or assumes any legal
+liability or responsibility for the accuracy, completeness, or usefulness or any
+information, apparatus, product, software, or process disclosed, or represents
+that its use would not infringe privately owned rights.
 
-Note: Ensure that you have created the virtual environment using Poetry
-
-Install pre-commit hooks:
-
-```poetry run pre-commit install```
-
-To run pre-commit on all your files, run this command:
-
-```poetry run pre-commit run --all-files```
-
-If you have precommit installed and you want to ignore running the commit hooks
-every time you run a commit, include the `--no-verify` flag in your commit. The following
-is an example:
-
-```git commit -m "Some message" --no-verify```
-
-
-# Publishing to PyPi
-
-Publishing your Driver module to PyPi is automated through the continuous integration workflow provided in `~/.github/workflows/publish_to_pypi.yml`.
-You can update that Github Workflow with your credentials to ensure that publishing to PyPi will succeed. The default behavior of
-that workflow is to publish to PyPi when a release has been published. If you want to change this behavior, you can modify the
-workflow to publish to PyPi based on whatever desired event; see [Github Workflows docs](https://docs.github.com/en/actions/using-workflows/triggering-a-workflow)
-on how to change the events that trigger a workflow.
-
-
-# Documentation
-
-To build the docs, navigate to the 'docs' directory and build the documentation:
-
-```shell
-cd docs
-make html
-```
-
-After the documentation is built, view the documentation in html form in your browser.
-The html files will be located in `~<path to project directory>/docs/build/html`.
-
-**PROTIP: To open the landing page of your documentation directly from the command line, run the following command:**
-
-```shell
-open <path to project directory>/docs/build/html/index.html
-```
-
-This will open the documentation landing page in your default browsert (e.g. Chrome, Firefox).
+Reference herein to any specific commercial product, process, or service by
+trade name, trademark, manufacturer, or otherwise does not necessarily
+constitute or imply its endorsement, recommendation, or favoring by the United
+States Government or any agency thereof, or Battelle Memorial Institute. The
+views and opinions of authors expressed herein do not necessarily state or
+reflect those of the United States Government or any agency thereof.
