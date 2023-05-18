@@ -1,5 +1,6 @@
 # volttron-lib-modbus-driver
 
+[![Eclipse VOLTTRON™](https://img.shields.io/badge/Eclips%20VOLTTRON--red.svg)](https://volttron.readthedocs.io/en/latest/)
 ![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)
 ![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
 ![Passing?](https://github.com/VOLTTRON/volttron-lib-modbus-driver/actions/workflows/run-tests.yml/badge.svg)
@@ -11,8 +12,7 @@
 
 ## Requires
 
-* python >=3.8
-* volttron >= 10.0
+* python >=3.10
 * volttron-lib-base-driver
 * pymodbus >= 2.3.5
 
