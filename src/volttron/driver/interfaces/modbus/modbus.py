@@ -45,9 +45,8 @@ from volttron.driver.base.interfaces import (
     DriverInterfaceError,
 )
 from volttron.driver.base.config import PointConfig, RemoteConfig
-from volttron.utils.logs import setup_logging
 
-setup_logging()
+
 _log = logging.getLogger(__name__)
 
 
