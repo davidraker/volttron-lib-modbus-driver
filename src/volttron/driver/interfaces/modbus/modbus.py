@@ -257,9 +257,9 @@ class Modbus(BasicRevert, BaseInterface):
     INTERFACE_CONFIG_CLASS = ModbusRemoteConfig
     REGISTER_CONFIG_CLASS = ModbusPointConfig
 
-    def __init__(self, config: ModbusRemoteConfig, **kwargs):
-        BasicRevert.__init__(self, **kwargs)
-        BaseInterface.__init__(self, config, **kwargs)
+    def __init__(self, config: ModbusRemoteConfig, *args, **kwargs):
+        BasicRevert.__init__(self, *args, **kwargs)
+        BaseInterface.__init__(self, config, *args, **kwargs)
         self.register_ranges = {
             ('byte', True): [],
             ('byte', False): [],
