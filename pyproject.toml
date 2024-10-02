@@ -38,7 +38,6 @@ volttron-lib-base-driver = { path = "../volttron-lib-base-driver", develop = tru
 pymodbus = "^3.7.2"
 
 [tool.poetry.group.dev.dependencies]
-volttron-testing = "^0.3.1a9"
 pytest = "^6.2.5"
 pytest-cov = "^3.0.0"
 modbus-tk= "^1.1.2"
