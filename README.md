@@ -36,7 +36,7 @@ Information on how to install of the VOLTTRON platform can be found
 2. Install the volttron-lib-modbus-driver library.
 
     ```shell
-    pip install volttron-lib-modbus-driver
+    poetry add volttron-lib-modbus-driver
     ```
 
 3. Store device and registry files for the Modbus device to the Platform Driver configuration store:
