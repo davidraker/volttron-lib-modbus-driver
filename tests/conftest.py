@@ -1,6 +1,7 @@
 """Shared fixtures for the Modbus interface test suite. These run without a platform, a proxy, or a device."""
 import json
 
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -11,6 +12,11 @@ from gevent.event import AsyncResult
 from volttron.driver.base.config import RemoteConfig
 from volttron.driver.interfaces.modbus.modbus import Modbus, ModbusPointConfig
 
+p = Path(__file__)
+if p.parent.parent.parent.resolve().as_posix() not in sys.path:
+    sys.path.insert(0, p.parent.parent.resolve().as_posix())
+
+from volttrontesting.fixtures.volttron_platform_fixtures import *
 TESTS_DIR = Path(__file__).parent
 CATALYST_CSV = TESTS_DIR.parent / 'catalyst371.csv'
 
