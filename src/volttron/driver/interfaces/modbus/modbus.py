@@ -55,7 +55,7 @@ from gevent.event import AsyncResult
 
 from protocol_proxy.ipc import ProtocolProxyMessage, ProtocolProxyPeer
 from protocol_proxy.manager.gevent import GeventProtocolProxyManager
-from protocol_proxy.protocol.modbus.registers import DATATYPE, PAD, RegisterSpec, parse_data_type
+from protocol_proxy.protocol.modbus.registers import DATATYPE, PAD, RegisterSpec, parse_type_spec
 
 from volttron.driver.base.interfaces import BaseInterface, BaseRegister, BasicRevert, DriverInterfaceError
 
@@ -92,6 +92,8 @@ class ModbusRegister(BaseRegister):
         """This register's entry in a CONFIGURE_REGISTERS 'tables' list."""
         fields = {'address': self.spec.address, 'data_type': self.spec.data_type.name, 'count': self.spec.count,
                   'word_order': self.spec.word_order}
+        if self.spec.byte_swap:
+            fields['byte_swap'] = True
         if self.spec.data_type is DATATYPE.STRING:
             fields['string_encoding'] = self.spec.string_encoding
         return fields
@@ -123,7 +125,7 @@ class Modbus(BasicRevert, BaseInterface):
     def create_register(self, register_definition: ModbusPointConfig) -> ModbusRegister:
         point = register_definition
         try:
-            data_type, count = parse_data_type(point.data_type)
+            data_type, count, little_endian = parse_type_spec(point.data_type)
         except ValueError as e:
             raise ValueError(f"Point {point.volttron_point_name}: {e}") from e
         is_pad = data_type is PAD
@@ -134,12 +136,18 @@ class Modbus(BasicRevert, BaseInterface):
             raise ValueError(f"Point {point.volttron_point_name} is writable but the {table.value} table is read-only.")
         if table.is_bits and data_type not in (DATATYPE.BITS, PAD):
             raise ValueError(f"Point {point.volttron_point_name}: {table.value} table holds booleans, not {data_type.name}.")
-        word_order = point.word_order.value if point.word_order else \
-            ('little' if point.mixed_endian else self.config.word_order.value)
+        if point.word_order:
+            word_order = point.word_order.value
+        elif point.mixed_endian:
+            word_order = 'little'
+        elif little_endian:
+            word_order = 'little'          # legacy '<' struct types: little-endian byte stream, see RegisterSpec
+        else:
+            word_order = self.config.word_order.value
         try:
             spec = RegisterSpec(self.config.addressing.resolve(point.address, table), data_type,
                                 count=point.count if point.count is not None else count,
-                                word_order=word_order, string_encoding=point.string_encoding)
+                                word_order=word_order, string_encoding=point.string_encoding, byte_swap=little_endian)
         except ValueError as e:
             raise ValueError(f"Point {point.volttron_point_name}: {e}") from e
 
