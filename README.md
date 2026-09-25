@@ -1,141 +1,187 @@
-# volttron-lib-modbus-driver
+# VOLTTRON Modbus Driver Interface
 
-![Passing?](https://github.com/VOLTTRON/volttron-lib-modbus-driver/actions/workflows/run_tests.yml/badge.svg)
+![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)
+![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)
+[![Passing?](https://github.com/VOLTTRON/volttron-lib-modbus-driver/actions/workflows/run-tests.yml/badge.svg)](https://github.com/VOLTTRON/volttron-lib-modbus-driver/actions/workflows/run-tests.yml)
 [![pypi version](https://img.shields.io/pypi/v/volttron-lib-modbus-driver.svg)](https://pypi.org/project/volttron-lib-modbus-driver/)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
 
-# Prerequisites
+This interface lets the VOLTTRON Platform Driver poll and command Modbus devices over TCP, UDP, TLS, or serial.
+All Modbus communication happens in the [Modbus Protocol Proxy](https://github.com/eclipse-volttron/lib-protocol-proxy-modbus),
+a separate process shared by every Modbus device on the platform. The interface declares each device's registers and
+their data types to the proxy once, then reads and writes decoded values by address. Grouping registers into requests,
+padding, and value encoding are handled by the proxy.
 
-* Python 3.8
-* Poetry 1.2.2
+## Pre-requisite
 
-## Python
+VOLTTRON (>=11.0.0rc0) should be installed and running.  Its virtual environment should be active.
+Information on how to install of the VOLTTRON platform can be found
+[here](https://github.com/eclipse-volttron/volttron-core/tree/v10)
 
-<details>
-<summary>To install Python 3.8, we recommend using <a href="https://github.com/pyenv/pyenv"><code>pyenv</code></a>.</summary>
+## Automatically installed dependencies
 
-```bash
-# install pyenv
-git clone https://github.com/pyenv/pyenv ~/.pyenv
+* volttron-lib-base-driver >= 2.0.0rc5
+* protocol-proxy-modbus >= 2.0.0rc3 (which brings pymodbus)
 
-# setup pyenv (you should also put these three lines in .bashrc or similar)
-export PATH="${HOME}/.pyenv/bin:${PATH}"
-export PYENV_ROOT="${HOME}/.pyenv"
-eval "$(pyenv init -)"
+# Documentation
+More detailed documentation can be found on [ReadTheDocs](https://eclipse-volttron.readthedocs.io/en/latest/external-docs/volttron-lib-modbus-driver/index.html#modbus-driver). The RST source
+of the documentation for this component is located in the "docs" directory of this repository.
 
-# install Python 3.8
-pyenv install 3.8.10
-
-# make it available globally
-pyenv global system 3.8.10
-```
-</details>
-
-
-## Poetry
-
-This project uses `poetry` to install and manage dependencies. To install poetry,
-follow these [instructions](https://python-poetry.org/docs/master/#installation).
 
 # Installation
 
-With `pip`:
+
+1. If it is not already, install the VOLTTRON Platform Driver Agent:
+
+    ```shell
+    vctl install volttron-platform-driver --vip-identity platform.driver
+    ```
+
+1. Install the VOLTTRON Modbus Driver Library:
+
+    ```shell
+    poetry add --directory $VOLTTRON_HOME volttron-lib-modbus-driver
+    ```
+
+1. Store device and registry files for the Modbus device to the Platform Driver configuration store:
+
+    * Create a config directory and navigate to it:
+
+        ```shell
+        mkdir config
+        cd config
+        ```
+
+    * Create a file called `device_name.config`; it should contain a JSON object that specifies the configuration of your
+      Modbus driver. An example of such a file is provided at the root of this project; the example file is named
+      'modbus.config'. The following JSON is an example of a `modbus.config`:
+
+         ```json
+         {
+             "driver_type": "modbus",
+             "remote_config": {
+                 "device_address": "10.0.0.4",
+                 "port": 502,
+                 "unit_id": 1
+             },
+             "registry_config": "config://modbus.csv",
+             "interval": 15,
+             "timezone": "US/Pacific"
+         }
+         ```
+
+      The legacy key `driver_config` is accepted in place of `remote_config`.
+
+    * Create another file called `device_name.csv`; it should contain all the points on the device that you want
+      published to VOLTTRON. An example of such a CSV file is provided at the root of this project; the example CSV file
+      is named 'catalyst371.csv'. The following CSV file is an example:
+
+        ```csv
+        Volttron Point Name,Units,Writable,Point Address,Modbus Register,Table,Default Value,Notes
+        ReturnAirCO2,PPM,FALSE,1001,>f,input,,CO2 reading
+        CO2Stpt,PPM,TRUE,1003,>f,holding,1000,Setpoint
+        UnitName,,TRUE,1005,string[6],holding,,Unit name
+        reserved,,FALSE,1008,pad[2],holding,,Read through but never published
+        Mode,,TRUE,1010,uint16,holding,,Operating mode
+        FanStatus,,FALSE,3,bool,discrete_input,,Fan proof
+        FanCmd,,TRUE,5,bool,coil,,Fan command
+        ```
+
+    * Add the Modbus driver config and CSV file to the Platform Driver configuration store:
+
+         ```
+         vctl config store platform.driver modbus.csv modbus.csv --csv
+         vctl config store platform.driver devices/campus/building/modbus modbus.config
+         ```
+
+1. Observe Data
+
+    To see data being published to the bus, install a [Listener Agent](https://github.com/eclipse-volttron/volttron-listener):
+
+    ```
+    vctl install volttron-listener --start
+    ```
+
+    Once installed, you should see the data being published by viewing the Volttron logs file that was created in step 2.
+    To watch the logs, open a separate terminal and run the following command:
+
+    ```
+    tail -f <path to folder containing volttron.log>/volttron.log
+    ```
+
+# Configuration reference
+
+## Device configuration (`remote_config`)
+
+| Key | Default | Description |
+|---|---|---|
+| `device_address` | required | Host name or IP of the device or gateway, or the serial device path (`/dev/ttyUSB0`). |
+| `transport_protocol` | `tcp` | `tcp`, `udp`, `tls`, or `serial`. |
+| `port` | 502 (802 for TLS) | TCP/UDP/TLS port. Ignored for serial. |
+| `unit_id` | 1 | Modbus unit (slave) id. `device_id` and `slave_id` are accepted aliases. Each unit gets its own device configuration; units behind one gateway share the proxy's connection to it. |
+| `addressing` | `offset` | How `Point Address` is expressed: `offset` (zero-based protocol address; `exact` is a synonym), `offset_plus` (one-based), or `address` (table-prefixed, e.g. 40001 for the first holding register). |
+| `word_order` | `big` | Register order for multi-register values. `endian` is an accepted alias. A point may override this. |
+| `max_gap` | 0 | Largest run of unconfigured registers the proxy may read through to merge two requests into one. |
+| `timeout` | 3 | Seconds the proxy waits for the device to answer one request before retrying. |
+| `retries` | 3 | Retries after the first attempt of each request. |
+| `reply_timeout` | derived | Seconds the driver waits for the proxy's reply. Defaults to three full timeout-and-retry cycles and at least 30 seconds, so it outlasts requests queued behind other units on a shared gateway. |
+| `registration_timeout` | 30 | Seconds to wait for the proxy process to start. |
+| `baudrate`, `bytesize`, `parity`, `stopbits` | 9600, 8, `none`, 1 | Serial settings. `parity` is `none`, `even`, `odd`, `mark`, or `space`. |
+| `proxy_group` | none | All Modbus devices share one proxy process. Name a group here to give a set of devices their own process. |
+
+## Registry columns
+
+| Column | Description |
+|---|---|
+| `Volttron Point Name` | Topic segment for the point. Required. |
+| `Point Address` | Register (or coil) address, interpreted according to `addressing`. `Address` is accepted. |
+| `Modbus Register` | Data type. Also accepted under `Data Type`, `Data Format`, or `Type`. Spellings: pymodbus names (`UINT16`, `INT32`, `FLOAT32`, `FLOAT64`, `STRING`, `BITS`), modbus_tk names (`uint16`, `int32`, `float`, `double`, `string[8]`, `bool`), or struct formats (`>f`, `>H`, `4H`, `8s`). |
+| `Table` | `coil`, `discrete_input`, `holding`, or `input` (modbus_tk names such as `analog_output_holding_registers` are accepted). Optional: booleans default to `coil` when writable and `discrete_input` otherwise; everything else defaults to `holding` when writable and `input` otherwise. |
+| `Writable` | `TRUE` or `FALSE`. Points in read-only tables cannot be writable. |
+| `Count` | Number of registers (or coils), when the type does not imply it, e.g. a string without a length. |
+| `Word Order` / `Mixed Endian` | Per-point word order. `Mixed Endian: TRUE` is the legacy spelling of `little`. |
+| `Default Value` | Value written when the point is reverted. Otherwise the last polled value is used. |
+| `Units`, `Notes` | Metadata published with the point. |
+
+### Pad registers
+
+A row whose data type is `pad` (or `pad[n]`) declares registers to read but never publish. Use pads to bridge gaps
+between points so that they are fetched in one request. Pad rows must name their `Table`. They are not points: the
+platform will not poll or publish them, and they do not appear in the device's topics.
+
+## Requests per poll
+
+When the device registers with the proxy, the driver logs, per table, how many points and pads were configured and
+how many requests each poll will take. Adjust pads and `max_gap` to reduce that number.
+
+# Testing
 
 ```shell
-python3.8 -m pip install volttron-lib-modbus-driver
-
-# Develop mode
-python3.8 -m pip install --editable volttron-lib-modbus-driver
+pytest tests
 ```
+
+The unit tests run against a fake proxy manager. `tests/test_end_to_end.py` additionally launches a real Modbus
+proxy process and a pymodbus TCP simulator on a free local port; it needs no hardware.
 
 # Development
 
-## Environment
+Please see the following for contributing guidelines [contributing](https://github.com/eclipse-volttron/volttron-core/blob/develop/CONTRIBUTING.md).
 
-Set the environment to be in your project directory:
+Please see the following helpful guide about [developing modular VOLTTRON agents](https://eclipse-volttron.readthedocs.io/en/latest/developing-volttron/developing-agents/agent-development.html)
 
-```poetry config virtualenvs.in-project true```
+# Disclaimer Notice
 
-If you want to install all your dependencies, including dependencies to help with developing your agent, run this command:
+This material was prepared as an account of work sponsored by an agency of the
+United States Government.  Neither the United States Government nor the United
+States Department of Energy, nor Battelle, nor any of their employees, nor any
+jurisdiction or organization that has cooperated in the development of these
+materials, makes any warranty, express or implied, or assumes any legal
+liability or responsibility for the accuracy, completeness, or usefulness or any
+information, apparatus, product, software, or process disclosed, or represents
+that its use would not infringe privately owned rights.
 
-```poetry install```
-
-If you want to install only the dependencies needed to run your agent, run this command:
-
-```poetry install --no-dev```
-
-Activate the virtual environment:
-
-```shell
-# using Poetry
-poetry shell
-
-# using 'source' command
-source "$(poetry env info --path)/bin/activate"
-```
-
-## Source Control
-
-1. To use git to manage version control, create a new git repository in your local agent project.
-
-```git init```
-
-2. Then create a new repo in your Github or Gitlab account. Copy the URL that points to that new repo in
-your Github or Gitlab account. This will be known as our 'remote'.
-
-3. Add the remote (i.e. the new repo URL from your Github or Gitlab account) to your local repository. Run the following command:
-
-```git remote add origin <my github/gitlab URL>```
-
-When you push to your repo, note that the default branch is called 'main'.
-
-
-## Optional Configurations
-
-### Precommit
-
-Note: Ensure that you have created the virtual environment using Poetry
-
-Install pre-commit hooks:
-
-```poetry run pre-commit install```
-
-To run pre-commit on all your files, run this command:
-
-```poetry run pre-commit run --all-files```
-
-If you have precommit installed and you want to ignore running the commit hooks
-every time you run a commit, include the `--no-verify` flag in your commit. The following
-is an example:
-
-```git commit -m "Some message" --no-verify```
-
-
-# Publishing to PyPi
-
-Publishing your Driver module to PyPi is automated through the continuous integration workflow provided in `~/.github/workflows/publish_to_pypi.yml`.
-You can update that Github Workflow with your credentials to ensure that publishing to PyPi will succeed. The default behavior of
-that workflow is to publish to PyPi when a release has been published. If you want to change this behavior, you can modify the
-workflow to publish to PyPi based on whatever desired event; see [Github Workflows docs](https://docs.github.com/en/actions/using-workflows/triggering-a-workflow)
-on how to change the events that trigger a workflow.
-
-
-# Documentation
-
-To build the docs, navigate to the 'docs' directory and build the documentation:
-
-```shell
-cd docs
-make html
-```
-
-After the documentation is built, view the documentation in html form in your browser.
-The html files will be located in `~<path to project directory>/docs/build/html`.
-
-**PROTIP: To open the landing page of your documentation directly from the command line, run the following command:**
-
-```shell
-open <path to project directory>/docs/build/html/index.html
-```
-
-This will open the documentation landing page in your default browsert (e.g. Chrome, Firefox).
+Reference herein to any specific commercial product, process, or service by
+trade name, trademark, manufacturer, or otherwise does not necessarily
+constitute or imply its endorsement, recommendation, or favoring by the United
+States Government or any agency thereof, or Battelle Memorial Institute. The
+views and opinions of authors expressed herein do not necessarily state or
+reflect those of the United States Government or any agency thereof.

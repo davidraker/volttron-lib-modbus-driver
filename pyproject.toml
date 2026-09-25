@@ -26,22 +26,21 @@ classifiers = [
 ]
 
 [tool.poetry.dependencies]
-python = ">=3.8,<4.0"
-pymodbus = "^2.5.3"
-gevent = "^21.12.0"
-volttron-lib-base-driver = "^0.1.1a0"
+python = ">=3.10,<4.0"
+protocol-proxy-modbus = ">=2.0.0rc3"
+volttron-lib-base-driver = ">=2.0.0rc5"
 
 [tool.poetry.group.dev.dependencies]
-volttron-testing = "^0.3.1a7"
-pytest = "^6.2.5"
-pytest-cov = "^3.0.0"
-mock = "^4.0.3"
-pre-commit = "^2.17.0"
-yapf = "^0.32.0"
-toml = "^0.10.2"
-mypy = "^0.942"
-coverage = "^6.3.2"
-isort = "^5.10.1"
+#volttron-testing = "^0.3.1a7"
+#pytest = "^6.2.5"
+#pytest-cov = "^3.0.0"
+#mock = "^4.0.3"
+#pre-commit = "^2.17.0"
+#yapf = "^0.32.0"
+#toml = "^0.10.2"
+#mypy = "^0.942"
+#coverage = "^6.3.2"
+#isort = "^5.10.1"
 
 [tool.poetry.group.documentation.dependencies]
 Sphinx = "^4.5.0"
