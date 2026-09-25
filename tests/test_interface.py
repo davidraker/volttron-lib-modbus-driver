@@ -124,6 +124,14 @@ class TestCreateRegister:
         iface = make_interface()
         assert iface.create_register(point('c', 5, mixed_endian=True)).spec.word_order == 'little'
 
+    def test_legacy_little_endian_struct_types(self, make_interface):
+        reg = make_interface().create_register(point('p', 100, '<f', writable=True))
+        assert reg.spec.byte_swap is True and reg.spec.word_order == 'little'
+        assert reg.spec_fields() == {'address': 100, 'data_type': 'FLOAT32', 'count': 2, 'word_order': 'little',
+                                     'byte_swap': True}
+        reg = make_interface().create_register(point('q', 100, '<f', word_order='big'))
+        assert reg.spec.byte_swap is True and reg.spec.word_order == 'big'
+
     def test_addressing_applied(self, make_interface):
         iface = make_interface(addressing='address')
         assert iface.create_register(point('p', 40011, '>f', writable=True)).address == 10

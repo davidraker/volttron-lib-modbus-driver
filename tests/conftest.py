@@ -1,7 +1,7 @@
 """Shared fixtures for the Modbus interface test suite. These run without a platform, a proxy, or a device."""
 import json
+import os
 
-import sys
 from pathlib import Path
 from unittest import mock
 
@@ -12,13 +12,10 @@ from gevent.event import AsyncResult
 from volttron.driver.base.config import RemoteConfig
 from volttron.driver.interfaces.modbus.modbus import Modbus, ModbusPointConfig
 
-p = Path(__file__)
-if p.parent.parent.parent.resolve().as_posix() not in sys.path:
-    sys.path.insert(0, p.parent.parent.resolve().as_posix())
+from tests.platform_cli import PlatformCLI
 
-from volttrontesting.fixtures.volttron_platform_fixtures import *
 TESTS_DIR = Path(__file__).parent
-CATALYST_CSV = TESTS_DIR.parent / 'catalyst371.csv'
+CATALYST_CSV = TESTS_DIR.parent / 'modbus_example_registry.csv'
 
 
 class FakePPM:
@@ -107,3 +104,31 @@ def interface(make_interface):
 
 
 TOPIC = 'campus/building/rtu/{}'.format
+
+
+# ---------------------------------------------------------------------------- platform-level tests
+# The Platform Driver project, when this interface is checked out inside the modular monorepo; otherwise the PyPI name.
+_LOCAL_PLATFORM_DRIVER = Path(__file__).resolve().parents[3] / 'platform-driver-agent'
+PLATFORM_DRIVER_SOURCE = str(_LOCAL_PLATFORM_DRIVER) if (_LOCAL_PLATFORM_DRIVER / 'pyproject.toml').exists() \
+    else 'volttron-platform-driver'
+PLATFORM_DRIVER = 'platform.driver'
+
+
+@pytest.fixture(scope='module')
+def platform(tmp_path_factory):
+    """A real VOLTTRON platform with the Platform Driver installed, driven through vctl and vdrv.
+
+    Slow (a few minutes) because the platform builds a poetry project of the environment on first start. Set
+    MODBUS_SKIP_PLATFORM_TESTS=1 to skip these tests.
+    """
+    if os.environ.get('MODBUS_SKIP_PLATFORM_TESTS'):
+        pytest.skip('MODBUS_SKIP_PLATFORM_TESTS is set')
+    if not PlatformCLI.available():
+        pytest.skip('volttron, vctl and vdrv must be installed in the test environment')
+    cli = PlatformCLI(tmp_path_factory.mktemp('platform') / 'volttron_home')
+    cli.start()
+    try:
+        cli.install_agent(PLATFORM_DRIVER_SOURCE, vip_identity=PLATFORM_DRIVER, tag='driver')
+        yield cli
+    finally:
+        cli.shutdown()

@@ -1,22 +1,28 @@
-import gevent
+"""Platform-level test of the Modbus driver against a local modbus_tk server.
+
+A real VOLTTRON platform (see the ``platform`` fixture) runs the Platform Driver, which polls a modbus_tk TCP server
+started here through the Modbus Protocol Proxy. Points cover every struct data type in both byte orders, including the
+legacy '<' little-endian forms, and are read and written through the Platform Driver's ``vdrv`` command-line tool.
+"""
+import csv
 import json
 import logging
-import pytest
 import socket
+import time
 
 from random import randint
 from struct import pack, unpack
 
-from volttron.client.known_identities import CONFIGURATION_STORE, PLATFORM_DRIVER
-from volttron.utils import setup_logging
-from volttrontesting.platformwrapper import PlatformWrapper
+import pytest
 
 from . import helpers
 from .client import Client, Field
+from .conftest import PLATFORM_DRIVER
 from .server import Server
 
-setup_logging()
 logger = logging.getLogger(__name__)
+
+DEVICE_TOPIC = 'devices/modbus'
 
 
 def get_rand_ip_and_port():
@@ -88,6 +94,7 @@ REGISTRY_CONFIG = [{"Volttron Point Name": "BigUShort", "Units": "PPM", "Modbus 
                    {"Volttron Point Name": "LittleLong", "Units": "PPM", "Modbus Register": "<q",
                     "Writable": "TRUE", "Point Address": "112"}]
 
+# Legacy form of the device configuration (driver_config, slave_id); the driver still accepts it.
 DRIVER_CONFIG = {
     "driver_config": {
         "device_address": IP,
@@ -101,58 +108,26 @@ DRIVER_CONFIG = {
 }
 
 
+def topic(point_name: str) -> str:
+    return f'{DEVICE_TOPIC}/{point_name}'
+
+
 @pytest.fixture(scope="module")
-def publish_agent(volttron_instance: PlatformWrapper):
-    assert volttron_instance.is_running()
-    vi = volttron_instance
-    assert vi is not None
-    assert vi.is_running()
-
-    # install platform driver
-    config = {
-        "driver_scrape_interval": 0.05,
-        "publish_breadth_first_all": "false",
-        "publish_depth_first": "false",
-        "publish_breadth_first": "false"
-    }
-    puid = vi.install_agent(agent_dir="volttron-platform-driver",
-                            config_file=config,
-                            start=False,
-                            vip_identity=PLATFORM_DRIVER)
-    assert puid is not None
-    gevent.sleep(1)
-    assert vi.start_agent(puid)
-    assert vi.is_agent_running(puid)
-
-    # create the publish agent
-    publish_agent = volttron_instance.build_agent()
-    assert publish_agent.core.identity
-    gevent.sleep(1)
-
-    capabilities = {"edit_config_store": {"identity": PLATFORM_DRIVER}}
-    volttron_instance.add_capabilities(publish_agent.core.publickey, capabilities)
-    gevent.sleep(1)
-
-    # Add Modbus Driver to Platform Driver
-    # This registry configuration contains only required fields
-    publish_agent.vip.rpc.call(CONFIGURATION_STORE,
-                               "manage_store",
-                               PLATFORM_DRIVER,
-                               "modbus.csv",
-                               json.dumps(REGISTRY_CONFIG),
-                               config_type="json").get(timeout=10)
-
-    publish_agent.vip.rpc.call(CONFIGURATION_STORE,
-                               "manage_store",
-                               PLATFORM_DRIVER,
-                               "devices/modbus",
-                               json.dumps(DRIVER_CONFIG),
-                               config_type='json').get(timeout=10)
-
-    yield publish_agent
-
-    volttron_instance.stop_agent(puid)
-    publish_agent.core.stop()
+def configured_driver(platform, tmp_path_factory):
+    """Store the registry and device configuration and wait for the device to register with the proxy."""
+    config_dir = tmp_path_factory.mktemp('config')
+    registry = config_dir / 'modbus.csv'
+    with open(registry, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=list(REGISTRY_CONFIG[0]))
+        writer.writeheader()
+        writer.writerows(REGISTRY_CONFIG)
+    device = config_dir / 'modbus.config'
+    device.write_text(json.dumps(DRIVER_CONFIG))
+    platform.store_config(PLATFORM_DRIVER, 'modbus.csv', registry, csv=True)
+    platform.store_config(PLATFORM_DRIVER, DEVICE_TOPIC, device)
+    summary = platform.wait_for_log(r'Modbus .* holding table: 14 points, 0 pads, (\d+) request\(s\) per poll')
+    logger.info(summary)
+    return platform
 
 
 class PPSPi32Client(Client):
@@ -196,8 +171,9 @@ class PPSPi32Client(Client):
                        helpers.REGISTER_READ_WRITE, helpers.OP_MODE_READ_WRITE)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def modbus_server():
+    """One server for the module: test_default_values runs first and sees the zeros, test_set_point then writes."""
     modbus_server = Server(address=IP, port=PORT)
     modbus_server.define_slave(1, PPSPi32Client, unsigned=True)
 
@@ -232,30 +208,24 @@ def modbus_server():
                              unpack('<HHHH', pack('>q', 0)))
 
     modbus_server.start()
-    gevent.sleep(1)
+    time.sleep(1)
     yield modbus_server
     modbus_server.stop()
 
 
-def test_default_values(modbus_server, publish_agent):
+def test_default_values(modbus_server, configured_driver):
     """
     By default server setting, all registers values are 0
     """
-    default_values = publish_agent.vip.rpc.call(PLATFORM_DRIVER, 'scrape_all',
-                                                'modbus').get(timeout=10)
-    assert type(default_values) is dict
-
-    for key in default_values.keys():
-        assert default_values[key] == 0 or 0.0
+    default_values = configured_driver.get(DEVICE_TOPIC)
+    assert set(default_values) == {topic(name) for name in REGISTERS_DICT}
+    assert all(value == 0 for value in default_values.values()), default_values
 
 
-def test_set_point(modbus_server, publish_agent):
-    for key in REGISTERS_DICT.keys():
-        publish_agent.vip.rpc.call(PLATFORM_DRIVER, 'set_point', 'modbus', key,
-                                   REGISTERS_DICT[key]).get(timeout=10)
+def test_set_point(modbus_server, configured_driver):
+    for key, value in REGISTERS_DICT.items():
+        assert configured_driver.set_point(topic(key), value) == value
+        assert configured_driver.get_point(topic(key)) == value
 
-        assert publish_agent.vip.rpc.call(PLATFORM_DRIVER, 'get_point', 'modbus',
-                                   key).get(timeout=10) == REGISTERS_DICT[key]
-
-    assert publish_agent.vip.rpc.call(PLATFORM_DRIVER, 'scrape_all',
-                                      'modbus').get(timeout=10) == REGISTERS_DICT
+    all_values = configured_driver.get(DEVICE_TOPIC)
+    assert all_values == {topic(name): value for name, value in REGISTERS_DICT.items()}

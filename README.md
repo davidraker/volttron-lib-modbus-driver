@@ -53,7 +53,7 @@ of the documentation for this component is located in the "docs" directory of th
 
     * Create a file called `device_name.config`; it should contain a JSON object that specifies the configuration of your
       Modbus driver. An example of such a file is provided at the root of this project; the example file is named
-      'modbus.config'. The following JSON is an example of a `modbus.config`:
+      'modbus_example.config'. The following JSON is an example of a `modbus.config`:
 
          ```json
          {
@@ -73,7 +73,7 @@ of the documentation for this component is located in the "docs" directory of th
 
     * Create another file called `device_name.csv`; it should contain all the points on the device that you want
       published to VOLTTRON. An example of such a CSV file is provided at the root of this project; the example CSV file
-      is named 'catalyst371.csv'. The following CSV file is an example:
+      is named 'modbus_example_registry.csv'. The following CSV file is an example:
 
         ```csv
         Volttron Point Name,Units,Writable,Point Address,Modbus Register,Table,Default Value,Notes
@@ -161,6 +161,12 @@ pytest tests
 
 The unit tests run against a fake proxy manager. `tests/test_end_to_end.py` additionally launches a real Modbus
 proxy process and a pymodbus TCP simulator on a free local port; it needs no hardware.
+
+`tests/test_driver_local.py` goes one level further: it starts a real VOLTTRON platform in a temporary home, installs
+the Platform Driver, configures this driver against a local modbus_tk server, and reads and writes every struct data
+type in both byte orders through `vdrv`. It takes a few minutes, mostly platform start-up. Set
+`MODBUS_SKIP_PLATFORM_TESTS=1` to skip it. `tests/test_driver_demo_board.py` runs the same flow against real hardware
+when `MODBUS_TEST_IP` is set.
 
 # Development
 
