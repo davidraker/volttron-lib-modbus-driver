@@ -127,13 +127,15 @@ of the documentation for this component is located in the "docs" directory of th
 | `registration_timeout` | 30 | Seconds to wait for the proxy process to start. |
 | `baudrate`, `bytesize`, `parity`, `stopbits` | 9600, 8, `none`, 1 | Serial settings. `parity` is `none`, `even`, `odd`, `mark`, or `space`. |
 | `proxy_group` | none | All Modbus devices share one proxy process. Name a group here to give a set of devices their own process. |
+| `register_map` | none | Optional modbus_tk-style register map, normally `config://<name>.csv`. Registry rows that lack an address or data type are completed from the map row with the same `Register Name`; see [modbus_tk configurations](#modbus_tk-configurations). Never needed when the registry is complete on its own. |
 
 ## Registry columns
 
 | Column | Description |
 |---|---|
-| `Volttron Point Name` | Topic segment for the point. Required. |
-| `Point Address` | Register (or coil) address, interpreted according to `addressing`. `Address` is accepted. |
+| `Volttron Point Name` | Topic segment for the point. Required unless `Register Name` is given, which is then used as the point name. |
+| `Register Name` | Name shared with a `register_map` row (see below). Also the point name when `Volttron Point Name` is absent. |
+| `Point Address` | Register (or coil) address, interpreted according to `addressing`. `Address` is accepted. Decimal, or hexadecimal with a `0x` prefix. |
 | `Modbus Register` | Data type. Also accepted under `Data Type`, `Data Format`, or `Type`. Spellings: pymodbus names (`UINT16`, `INT32`, `FLOAT32`, `FLOAT64`, `STRING`, `BITS`), modbus_tk names (`uint16`, `int32`, `float`, `double`, `string[8]`, `bool`), or struct formats (`>f`, `>H`, `4H`, `8s`). |
 | `Table` | `coil`, `discrete_input`, `holding`, or `input` (modbus_tk names such as `analog_output_holding_registers` are accepted). Optional: booleans default to `coil` when writable and `discrete_input` otherwise; everything else defaults to `holding` when writable and `input` otherwise. |
 | `Writable` | `TRUE` or `FALSE`. Points in read-only tables cannot be writable. |
@@ -141,6 +143,17 @@ of the documentation for this component is located in the "docs" directory of th
 | `Word Order` / `Mixed Endian` | Per-point word order. `Mixed Endian: TRUE` is the legacy spelling of `little`. |
 | `Default Value` | Value written when the point is reverted. Otherwise the last polled value is used. |
 | `Units`, `Notes` | Metadata published with the point. |
+
+### modbus_tk configurations
+
+The modbus_tk driver split a device between a registry (`Volttron Point Name`, `Register Name`) and a register map
+named by `register_map` in the device configuration (`Register Name`, `Address`, `Type`, `Units`, `Writable`, and
+optionally `Default Value`, `Table`, `Mixed Endian`, `Description`). Such configurations work unchanged. Rows that
+already carry an address and a data type are used as they are, so the map is only consulted for rows that need it.
+Where a registry row and its map row both supply a field, the registry row wins; blank registry cells do not override
+the map. A row that lacks an address or type and has no matching `Register Name` in the map is dropped with a warning
+and the rest of the device is configured. A map file may also be used directly as the registry: each row is then
+published under its `Register Name`.
 
 ### Pad registers
 

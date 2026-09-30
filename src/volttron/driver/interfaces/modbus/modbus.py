@@ -59,7 +59,8 @@ from protocol_proxy.protocol.modbus.registers import DATATYPE, PAD, RegisterSpec
 
 from volttron.driver.base.interfaces import BaseInterface, BaseRegister, BasicRevert, DriverInterfaceError
 
-from .config import ModbusPointConfig, ModbusRemoteConfig, Table, TransportProtocol
+from .config import (ModbusPointConfig, ModbusRemoteConfig, Table, TransportProtocol, merge_register_map,
+                     normalize_register_map)
 
 _log = logging.getLogger(__name__)
 
@@ -173,6 +174,18 @@ class Modbus(BasicRevert, BaseInterface):
         self.topics_by_address[(register.table, register.address)] = topic
         if register.default_value is not None:
             self.set_default(topic, register.default_value)     # Revert values are tracked by full topic.
+
+    def prepare_registry_config(self, registry_config: list[dict], remote_config=None) -> list[dict]:
+        """Complete incomplete registry rows from the optional modbus_tk-style register_map (see merge_register_map).
+
+        The map is taken from the remote configuration accompanying this registry when the platform supplies one (it
+        may be newer than self.config during an update), otherwise from this interface's configuration.
+        """
+        if remote_config is not None and hasattr(remote_config, 'register_map'):
+            register_map = normalize_register_map(remote_config.register_map, self.config.device_address)
+        else:
+            register_map = self.config.register_map
+        return merge_register_map(registry_config, register_map, self.config.device_address)
 
     def finalize_setup(self, initial_setup: bool = False):
         self.proxy_peer = self.ppm.get_proxy(self.config.proxy_key())

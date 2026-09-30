@@ -9,10 +9,10 @@ from gevent import Timeout
 from volttron.driver.base.config import RemoteConfig
 from volttron.driver.base.interfaces import DriverInterfaceError
 from volttron.driver.interfaces.modbus.config import (Addressing, ModbusPointConfig, ModbusRemoteConfig, Parity,
-                                                      Table, TransportProtocol)
+                                                      Table, TransportProtocol, merge_register_map)
 from volttron.driver.interfaces.modbus.modbus import Modbus, ModbusRegister
 
-from tests.conftest import CATALYST_CSV, TOPIC, point, serialized
+from tests.conftest import CATALYST_CSV, MODBUSTK_MAP_CSV, MODBUSTK_REGISTRY_CSV, TOPIC, point, read_csv, serialized
 
 
 class TestPointConfig:
@@ -39,6 +39,28 @@ class TestPointConfig:
     def test_pad_detection(self):
         assert point('p', 1, 'pad').is_pad and point('p', 1, 'PAD[3]').is_pad and point('p', 1, 'reserved').is_pad
         assert not point('p', 1, 'uint16').is_pad
+
+    @pytest.mark.parametrize('given, expected', [('0x200', 512), (' 0X20a ', 522), ('1001', 1001), (7, 7)])
+    def test_hex_or_decimal_address(self, given, expected):
+        assert point('p', given).address == expected
+
+    @pytest.mark.parametrize('row', [
+        {'Register Name': 'active_power_total', 'Address': '0x200', 'Type': 'float'},              # no column at all
+        {'Volttron Point Name': '', 'Register Name': 'active_power_total', 'Address': 1, 'Type': 'float'},   # blank
+        {'register_name': 'active_power_total', 'address': 1, 'data_type': 'float'},
+    ])
+    def test_register_name_used_when_point_name_missing(self, row):
+        cfg = ModbusPointConfig(**row)
+        assert cfg.volttron_point_name == 'active_power_total' and cfg.register_name == 'active_power_total'
+
+    def test_volttron_point_name_preferred_over_register_name(self):
+        cfg = ModbusPointConfig(**{'Volttron Point Name': 'Active Power Total', 'Register Name': 'active_power_total',
+                                   'Address': '0x200', 'Type': 'float'})
+        assert cfg.volttron_point_name == 'Active Power Total' and cfg.register_name == 'active_power_total'
+
+    def test_point_name_still_required_without_register_name(self):
+        with pytest.raises(ValueError, match='olttron'):
+            ModbusPointConfig(**{'Address': 1, 'Type': 'float'})
 
 
 class TestRemoteConfig:
@@ -177,6 +199,108 @@ class TestCreateRegister:
     def test_metadata_types(self, interface):
         assert interface.point_map[TOPIC('FanStatus')].python_type is bool
         assert interface.point_map[TOPIC('Mode')].python_type is int
+
+
+class TestRegisterMap:
+    """modbus_tk configurations: an optional register map completes registry rows that lack address or type."""
+
+    def test_complete_registry_never_consults_map(self):
+        rows = read_csv(CATALYST_CSV)
+        conflicting_map = [{'Register Name': r.get('Reference Point Name', ''), 'Address': '0x999', 'Type': 'uint16'}
+                           for r in rows]
+        assert merge_register_map(rows, None) == rows
+        assert merge_register_map(rows, conflicting_map) == rows
+
+    def test_two_column_registry_completed_from_map(self):
+        merged = merge_register_map(read_csv(MODBUSTK_REGISTRY_CSV), read_csv(MODBUSTK_MAP_CSV), 'dev')
+        configs = [ModbusPointConfig(**row) for row in merged]
+        assert [c.volttron_point_name for c in configs][:3] == ['Active Power Total', 'Reactive Power Total',
+                                                                 'Apparent Power Total']
+        first = configs[0]
+        assert (first.register_name, first.address, first.data_type, first.units, first.writable) == \
+               ('active_power_total', 0x200, 'float', 'kW', True)
+        assert configs[-1].address == 0x605 and configs[-1].data_type == 'uint16'
+
+    def test_registry_row_overrides_map_but_blank_cells_do_not(self):
+        registry = [{'Volttron Point Name': 'Power', 'Register Name': 'p', 'Units': 'MW', 'Writable': ''}]
+        register_map = [{'Register Name': 'p', 'Address': '10', 'Type': 'float', 'Units': 'kW', 'Writable': 'TRUE'}]
+        merged, = merge_register_map(registry, register_map)
+        assert merged == {'Register Name': 'p', 'Address': '10', 'Type': 'float', 'Units': 'MW', 'Writable': 'TRUE',
+                          'Volttron Point Name': 'Power'}
+
+    def test_mixed_registry_completes_only_incomplete_rows(self):
+        registry = [{'Volttron Point Name': 'Own', 'Address': '1', 'Type': 'uint16'},
+                    {'Volttron Point Name': 'Mapped', 'Register Name': 'm'}]
+        register_map = [{'Register Name': 'm', 'Address': '2', 'Type': 'float'},
+                        {'Register Name': 'Own', 'Address': '99', 'Type': 'float'}]
+        merged = merge_register_map(registry, register_map)
+        assert merged[0] is registry[0]
+        assert merged[1]['Address'] == '2' and merged[1]['Volttron Point Name'] == 'Mapped'
+
+    def test_unmatched_rows_dropped_with_warning_and_rest_kept(self, caplog):
+        registry = read_csv(MODBUSTK_REGISTRY_CSV)
+        registry.insert(1, {'Volttron Point Name': 'Ghost', 'Register Name': 'not_in_map'})
+        registry.append({'Volttron Point Name': 'Nameless', 'Register Name': ''})
+        with caplog.at_level(logging.WARNING):
+            merged = merge_register_map(registry, read_csv(MODBUSTK_MAP_CSV), '10.0.0.4')
+        assert [r['Volttron Point Name'] for r in merged] == [r['Volttron Point Name'] for r in read_csv(MODBUSTK_REGISTRY_CSV)]
+        messages = [rec.message for rec in caplog.records if 'dropping registry row' in rec.message]
+        assert len(messages) == 2
+        assert "'Ghost'" in messages[0] and "no register_map row is named 'not_in_map'" in messages[0]
+        assert "'Nameless'" in messages[1] and 'no Register Name' in messages[1]
+
+    def test_incomplete_rows_without_map_dropped_with_warning(self, caplog):
+        registry = read_csv(MODBUSTK_REGISTRY_CSV)
+        with caplog.at_level(logging.WARNING):
+            assert merge_register_map(registry, None, '10.0.0.4') == []
+        assert all('no register_map is configured' in rec.message for rec in caplog.records) and caplog.records
+
+    def test_map_rows_without_register_name_are_ignored(self, caplog):
+        register_map = [{'Register Name': '', 'Address': '1', 'Type': 'float'},
+                        {'Register Name': 'p', 'Address': '2', 'Type': 'float'}]
+        with caplog.at_level(logging.WARNING):
+            merged, = merge_register_map([{'Register Name': 'p'}], register_map)
+        assert merged['Address'] == '2'
+        assert any('no Register Name' in rec.message for rec in caplog.records)
+
+    def test_remote_config_accepts_rows_and_rejects_garbage(self):
+        rows = read_csv(MODBUSTK_MAP_CSV)
+        assert ModbusRemoteConfig(driver_type='modbus', device_address='h', register_map=rows).register_map == rows
+        assert ModbusRemoteConfig(driver_type='modbus', device_address='h').register_map is None
+        with pytest.raises(ValueError, match='register_map'):
+            ModbusRemoteConfig(driver_type='modbus', device_address='h', register_map=[1, 2])
+
+    def test_unresolved_reference_logs_error_and_is_ignored(self, caplog):
+        with caplog.at_level(logging.ERROR):
+            cfg = ModbusRemoteConfig(driver_type='modbus', device_address='h', register_map='config://missing.csv')
+        assert cfg.register_map is None
+        assert any("'config://missing.csv' was not resolved" in rec.message for rec in caplog.records)
+
+    def test_interface_hook_uses_its_own_map(self, make_interface):
+        iface = make_interface(register_map=read_csv(MODBUSTK_MAP_CSV))
+        merged = iface.prepare_registry_config(read_csv(MODBUSTK_REGISTRY_CSV))
+        assert len(merged) == 10 and merged[0]['Address'] == '0x200'
+
+    def test_interface_hook_prefers_the_supplied_remote_config(self, make_interface):
+        """During an update the platform passes the new remote config, which may carry a newer map."""
+        iface = make_interface(register_map=read_csv(MODBUSTK_MAP_CSV))
+        newer = RemoteConfig(driver_type='modbus', device_address='10.0.0.4',
+                             register_map=[{'Register Name': 'active_power_total', 'Address': '5', 'Type': 'int16'}])
+        merged = iface.prepare_registry_config([{'Volttron Point Name': 'P', 'Register Name': 'active_power_total'}], newer)
+        assert merged == [{'Register Name': 'active_power_total', 'Address': '5', 'Type': 'int16',
+                           'Volttron Point Name': 'P'}]
+
+    def test_interface_without_map_passes_complete_rows_through(self, make_interface):
+        iface = make_interface()
+        rows = read_csv(CATALYST_CSV)
+        assert iface.prepare_registry_config(rows, RemoteConfig(driver_type='modbus', device_address='10.0.0.4')) == rows
+
+    def test_merged_rows_build_registers(self, make_interface):
+        merged = merge_register_map(read_csv(MODBUSTK_REGISTRY_CSV), read_csv(MODBUSTK_MAP_CSV))
+        iface = make_interface([ModbusPointConfig(**row) for row in merged])
+        reg = iface.get_register_by_name(TOPIC('Active Power Total'))
+        assert (reg.address, reg.python_type, reg.read_only) == (0x200, float, False)
+        assert len(iface.get_register_names()) == 10
 
 
 class TestSetup:

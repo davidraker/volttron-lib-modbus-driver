@@ -1,10 +1,14 @@
 """Configuration models for the Modbus driver interface."""
+import logging
+
 from enum import Enum
 from typing import Any
 
 from pydantic import AliasChoices, Field, field_validator, model_validator
 
 from volttron.driver.base.config import PointConfig, RemoteConfig
+
+_log = logging.getLogger(__name__)
 
 
 class Table(str, Enum):
@@ -99,13 +103,99 @@ def _lower_or_none(v):
     return v.strip().lower() if isinstance(v, str) else v
 
 
+# Accepted spellings of the registry columns the driver itself needs to look up before validation. These must
+# agree with the validation_alias choices on ModbusPointConfig and PointConfig below.
 _DATA_TYPE_KEYS = ('data_type', 'Data Type', 'data_format', 'Data Format', 'modbus_register', 'Modbus Register',
                    'type', 'Type')
+_ADDRESS_KEYS = ('address', 'point_address', 'Address', 'Point Address')
+_REGISTER_NAME_KEYS = ('register_name', 'Register Name')
+_POINT_NAME_KEYS = ('volttron_point_name', 'Volttron Point Name')
 _PAD_TYPE_NAMES = ('pad', 'padding', 'reserved', 'skip')
 
 
 def is_pad_type(data_type: str) -> bool:
     return data_type.strip().lower().split('[')[0].strip() in _PAD_TYPE_NAMES
+
+
+def _is_blank(value) -> bool:
+    return value is None or (isinstance(value, str) and not value.strip())
+
+
+def _first_value(row: dict, keys: tuple[str, ...]):
+    """The first non-blank value in row under any of keys, or None."""
+    return next((row[k] for k in keys if k in row and not _is_blank(row[k])), None)
+
+
+def register_name_of(row: dict) -> str | None:
+    name = _first_value(row, _REGISTER_NAME_KEYS)
+    return str(name).strip() if name is not None else None
+
+
+def row_is_complete(row: dict) -> bool:
+    """Whether a registry row can be validated on its own: it names both an address and a data type."""
+    return _first_value(row, _ADDRESS_KEYS) is not None and _first_value(row, _DATA_TYPE_KEYS) is not None
+
+
+def _describe_row(row: dict) -> str:
+    name = _first_value(row, _POINT_NAME_KEYS) or register_name_of(row)
+    return repr(name) if name is not None else repr(row)
+
+
+def normalize_register_map(value, device: str = '') -> list[dict] | None:
+    """The register_map setting as a list of rows, or None.
+
+    The configuration store replaces a ``config://`` reference with the referenced file's rows before the driver sees
+    it, so a string here means the reference was not resolved (usually because no such config exists in the store).
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        _log.error(f"{device}: register_map {value!r} was not resolved to a register map. Check that the referenced"
+                   " configuration exists in the store. Continuing without a register map.")
+        return None
+    if isinstance(value, dict):
+        value = [value]
+    if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+        raise ValueError('register_map must be a config:// reference to a CSV file or a list of register rows.')
+    return value
+
+
+def merge_register_map(rows: list[dict], register_map: list[dict] | None, device: str = '') -> list[dict]:
+    """Complete registry rows from a modbus_tk-style register map.
+
+    A row which already names an address and a data type is used as-is, so the map is never required. Any other
+    row is completed from the map row with the same Register Name; where both name a field, the registry row wins,
+    as in modbus_tk (blank registry cells do not override the map). Rows that cannot be completed are dropped with a
+    warning, and the remaining rows are returned.
+    """
+    if all(row_is_complete(row) for row in rows):
+        return list(rows)
+    map_rows: dict[str, dict] = {}
+    for map_row in register_map or []:
+        name = register_name_of(map_row)
+        if name is None:
+            _log.warning(f"{device}: ignoring register_map row with no Register Name: {map_row!r}")
+        else:
+            map_rows[name] = map_row
+    merged = []
+    for row in rows:
+        if row_is_complete(row):
+            merged.append(row)
+            continue
+        name = register_name_of(row)
+        map_row = map_rows.get(name) if name is not None else None
+        if map_row is None:
+            if not register_map:
+                reason = 'no register_map is configured'
+            elif name is None:
+                reason = 'it has no Register Name to look up in the register_map'
+            else:
+                reason = f'no register_map row is named {name!r}'
+            _log.warning(f"{device}: dropping registry row {_describe_row(row)}: it lacks an address or data type"
+                         f" and {reason}.")
+            continue
+        merged.append({**map_row, **{k: v for k, v in row.items() if not _is_blank(v)}})
+    return merged
 
 
 class ModbusPointConfig(PointConfig):
@@ -145,6 +235,31 @@ class ModbusPointConfig(PointConfig):
                 data = {**{k: v for k, v in data.items() if k not in overridden},
                         'active': False, 'data_source': 'never', 'writable': False}
         return data
+
+    @model_validator(mode='before')
+    @classmethod
+    def _register_name_as_point_name(cls, data):
+        """A row with a Register Name but no Volttron Point Name is published under its Register Name.
+
+        Volttron Point Name is always used when present. modbus_tk registries commonly carried both, but a map file
+        used directly as the registry has only Register Name.
+        """
+        if isinstance(data, dict) and _first_value(data, _POINT_NAME_KEYS) is None:
+            register_name = register_name_of(data)
+            if register_name is not None:
+                data = {k: v for k, v in data.items() if k not in _POINT_NAME_KEYS}
+                data['volttron_point_name'] = register_name
+        return data
+
+    @field_validator('address', mode='before')
+    @classmethod
+    def _parse_address(cls, v):
+        """Addresses may be decimal or, as in modbus_tk register maps, hexadecimal such as 0x200."""
+        if isinstance(v, str):
+            v = v.strip()
+            if v.lower().startswith('0x'):
+                return int(v, 16)
+        return v
 
     @field_validator('table', mode='before')
     @classmethod
@@ -200,6 +315,15 @@ class ModbusRemoteConfig(RemoteConfig):
     stopbits: StopBits = Field(default=StopBits.one, validation_alias=AliasChoices('stopbits', 'stop_bits'))
     # All Modbus devices share one proxy process unless a group is named here.
     proxy_group: str | None = None
+    # Optional modbus_tk-style register map (normally a config:// reference to a CSV, resolved to its rows by the
+    # configuration store). Registry rows lacking an address or data type are completed from the map row with the
+    # same Register Name; see merge_register_map. Never required when the registry is complete on its own.
+    register_map: list[dict] | None = None
+
+    @field_validator('register_map', mode='before')
+    @classmethod
+    def _normalize_register_map(cls, v, info):
+        return normalize_register_map(v, str((info.data or {}).get('device_address', '')))
 
     @field_validator('addressing', mode='before')
     @classmethod

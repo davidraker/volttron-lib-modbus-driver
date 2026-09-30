@@ -108,8 +108,39 @@ DRIVER_CONFIG = {
 }
 
 
+# A modbus_tk-style configuration for a second device on unit 2 of the same server: a registry with only point names
+# and register names, completed from a register map with hexadecimal addresses. One registry row has no Volttron Point
+# Name (it is published under its Register Name) and one names a register missing from the map (dropped with a warning).
+TK_DEVICE_TOPIC = 'devices/modbus_tk'
+TK_REGISTRY_CONFIG = [{"Volttron Point Name": "Big Float", "Register Name": "big_float"},
+                      {"Volttron Point Name": "", "Register Name": "big_ushort"},
+                      {"Volttron Point Name": "Ghost", "Register Name": "not_in_map"}]
+TK_REGISTER_MAP = [{"Register Name": "big_float", "Address": "0xA", "Type": "float", "Units": "PPM", "Writable": "TRUE"},
+                   {"Register Name": "big_ushort", "Address": "0", "Type": "uint16", "Units": "PPM", "Writable": "TRUE"},
+                   {"Register Name": "unused", "Address": "0x64", "Type": "uint16", "Units": "", "Writable": "FALSE"}]
+TK_DRIVER_CONFIG = {
+    "driver_config": {
+        "device_address": IP,
+        "port": PORT,
+        "slave_id": 2,
+        "register_map": "config://modbus_tk_map.csv"
+    },
+    "driver_type": "modbus",
+    "registry_config": "config://modbus_tk.csv",
+    "interval": 120,
+    "timezone": "UTC"
+}
+
+
 def topic(point_name: str) -> str:
     return f'{DEVICE_TOPIC}/{point_name}'
+
+
+def write_csv(path, rows):
+    with open(path, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 @pytest.fixture(scope="module")
@@ -125,7 +156,24 @@ def configured_driver(platform, tmp_path_factory):
     device.write_text(json.dumps(DRIVER_CONFIG))
     platform.store_config(PLATFORM_DRIVER, 'modbus.csv', registry, csv=True)
     platform.store_config(PLATFORM_DRIVER, DEVICE_TOPIC, device)
-    summary = platform.wait_for_log(r'Modbus .* holding table: 14 points, 0 pads, (\d+) request\(s\) per poll')
+    summary = platform.wait_for_log(r'Modbus .* unit 1 holding table: 14 points, 0 pads, (\d+) request\(s\) per poll')
+    logger.info(summary)
+    return platform
+
+
+@pytest.fixture(scope="module")
+def configured_tk_driver(configured_driver, tmp_path_factory):
+    """Store a modbus_tk-style registry, register map and device configuration for unit 2."""
+    platform = configured_driver
+    config_dir = tmp_path_factory.mktemp('config_tk')
+    write_csv(config_dir / 'modbus_tk.csv', TK_REGISTRY_CONFIG)
+    write_csv(config_dir / 'modbus_tk_map.csv', TK_REGISTER_MAP)
+    device = config_dir / 'modbus_tk.config'
+    device.write_text(json.dumps(TK_DRIVER_CONFIG))
+    platform.store_config(PLATFORM_DRIVER, 'modbus_tk_map.csv', config_dir / 'modbus_tk_map.csv', csv=True)
+    platform.store_config(PLATFORM_DRIVER, 'modbus_tk.csv', config_dir / 'modbus_tk.csv', csv=True)
+    platform.store_config(PLATFORM_DRIVER, TK_DEVICE_TOPIC, device)
+    summary = platform.wait_for_log(r'Modbus .* unit 2 holding table: 2 points, 0 pads, (\d+) request\(s\) per poll')
     logger.info(summary)
     return platform
 
@@ -176,6 +224,7 @@ def modbus_server():
     """One server for the module: test_default_values runs first and sees the zeros, test_set_point then writes."""
     modbus_server = Server(address=IP, port=PORT)
     modbus_server.define_slave(1, PPSPi32Client, unsigned=True)
+    modbus_server.define_slave(2, PPSPi32Client, unsigned=True)     # The modbus_tk-style device.
 
     # Set values for registers from server as the default values
     modbus_server.set_values(1, PPSPi32Client().field_by_name("BigUShort"), 0)
@@ -229,3 +278,18 @@ def test_set_point(modbus_server, configured_driver):
 
     all_values = configured_driver.get(DEVICE_TOPIC)
     assert all_values == {topic(name): value for name, value in REGISTERS_DICT.items()}
+
+
+def test_modbus_tk_registry_and_map(modbus_server, configured_tk_driver):
+    """A registry completed from a register map polls and writes like any other; the unmatched row was dropped."""
+    platform = configured_tk_driver
+    values = platform.get(TK_DEVICE_TOPIC)
+    assert set(values) == {f'{TK_DEVICE_TOPIC}/Big Float', f'{TK_DEVICE_TOPIC}/big_ushort'}, values
+    assert all(value == 0 for value in values.values()), values
+    assert platform.set_point(f'{TK_DEVICE_TOPIC}/Big Float', -1234.0) == -1234.0
+    assert platform.get_point(f'{TK_DEVICE_TOPIC}/Big Float') == -1234.0
+    assert platform.set_point(f'{TK_DEVICE_TOPIC}/big_ushort', 42) == 42
+    assert platform.get_point(f'{TK_DEVICE_TOPIC}/big_ushort') == 42
+    assert platform.wait_for_log(r"dropping registry row 'Ghost'.*no register_map row is named 'not_in_map'", timeout=5)
+    # Unit 1's registers are untouched by writes to unit 2.
+    assert platform.get_point(topic('BigFloat')) != -1234.0 or REGISTERS_DICT['BigFloat'] == -1234.0

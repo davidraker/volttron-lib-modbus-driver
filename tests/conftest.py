@@ -1,4 +1,5 @@
 """Shared fixtures for the Modbus interface test suite. These run without a platform, a proxy, or a device."""
+import csv
 import json
 import os
 
@@ -16,6 +17,14 @@ from tests.platform_cli import PlatformCLI
 
 TESTS_DIR = Path(__file__).parent
 CATALYST_CSV = TESTS_DIR.parent / 'modbus_example_registry.csv'
+# A modbus_tk configuration: a two-column registry (Volttron Point Name, Register Name) completed from a register map.
+MODBUSTK_REGISTRY_CSV = TESTS_DIR / 'modbustk_registry.csv'
+MODBUSTK_MAP_CSV = TESTS_DIR / 'modbustk_map.csv'
+
+
+def read_csv(path) -> list[dict]:
+    with open(path, newline='') as f:
+        return list(csv.DictReader(f))
 
 
 class FakePPM:
