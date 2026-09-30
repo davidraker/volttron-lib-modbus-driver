@@ -123,12 +123,20 @@ class PlatformCLI:
         parts.append('--- log ---\n' + ('\n'.join(self.log.read_text().splitlines()[-lines:]) if self.log.exists() else '(no log)'))
         return '\n'.join(parts)
 
-    def wait_for_log(self, pattern: str, timeout: float = 90.0) -> str:
-        """Wait for a line matching the regular expression to appear in the platform log; return it."""
+    def log_size(self) -> int:
+        """Current length of the platform log, for use as the ``since`` argument of wait_for_log and log_since."""
+        return len(self.log.read_text()) if self.log.exists() else 0
+
+    def log_since(self, since: int) -> str:
+        """The platform log text appended after the given log_size() value."""
+        return self.log.read_text()[since:] if self.log.exists() else ''
+
+    def wait_for_log(self, pattern: str, timeout: float = 90.0, since: int = 0) -> str:
+        """Wait for a line matching the regular expression to appear in the platform log (after offset ``since``)."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.log.exists():
-                for line in reversed(self.log.read_text().splitlines()):
+                for line in reversed(self.log_since(since).splitlines()):
                     if re.search(pattern, line):
                         return line
             time.sleep(1)
@@ -149,6 +157,14 @@ class PlatformCLI:
     def install_agent(self, source: str, vip_identity: str, tag: str, timeout=400.0):
         """Install (editable when source is a directory) and start an agent, waiting until it reports running."""
         self.vctl('install', source, '--vip-identity', vip_identity, '--tag', tag, '--start', timeout=timeout)
+        self.wait_for_running(vip_identity)
+
+    def restart_agent(self, vip_identity: str, tag: str):
+        """Restart an agent, so that it reloads every configuration from the store, and wait until it is running."""
+        self.vctl('restart', '--tag', tag)
+        self.wait_for_running(vip_identity)
+
+    def wait_for_running(self, vip_identity: str):
         deadline = time.time() + 60
         while time.time() < deadline:
             if re.search(rf'\s{re.escape(vip_identity)}\s.*running', self.vctl('status')):

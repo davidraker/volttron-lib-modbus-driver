@@ -94,6 +94,10 @@ REGISTRY_CONFIG = [{"Volttron Point Name": "BigUShort", "Units": "PPM", "Modbus 
                    {"Volttron Point Name": "LittleLong", "Units": "PPM", "Modbus Register": "<q",
                     "Writable": "TRUE", "Point Address": "112"}]
 
+# Polls are scheduled on a hyperperiod, the least common multiple of the intervals in a group; keep it short so the
+# nested device below is polled several times within a test.
+POLL_INTERVAL = 10
+
 # Legacy form of the device configuration (driver_config, slave_id); the driver still accepts it.
 DRIVER_CONFIG = {
     "driver_config": {
@@ -103,7 +107,7 @@ DRIVER_CONFIG = {
     },
     "driver_type": "modbus",
     "registry_config": "config://modbus.csv",
-    "interval": 120,
+    "interval": POLL_INTERVAL,
     "timezone": "UTC"
 }
 
@@ -111,7 +115,10 @@ DRIVER_CONFIG = {
 # A modbus_tk-style configuration for a second device on unit 2 of the same server: a registry with only point names
 # and register names, completed from a register map with hexadecimal addresses. One registry row has no Volttron Point
 # Name (it is published under its Register Name) and one names a register missing from the map (dropped with a warning).
-TK_DEVICE_TOPIC = 'devices/modbus_tk'
+# Its topic is nested beneath the first device's topic, and it polls quickly: the first device's remote must neither
+# register nor poll the nested device's points (see EquipmentTree.device_points).
+TK_DEVICE_TOPIC = f'{DEVICE_TOPIC}/meter'
+TK_POLL_INTERVAL = 5
 TK_REGISTRY_CONFIG = [{"Volttron Point Name": "Big Float", "Register Name": "big_float"},
                       {"Volttron Point Name": "", "Register Name": "big_ushort"},
                       {"Volttron Point Name": "Ghost", "Register Name": "not_in_map"}]
@@ -127,7 +134,7 @@ TK_DRIVER_CONFIG = {
     },
     "driver_type": "modbus",
     "registry_config": "config://modbus_tk.csv",
-    "interval": 120,
+    "interval": TK_POLL_INTERVAL,
     "timezone": "UTC"
 }
 
@@ -293,3 +300,24 @@ def test_modbus_tk_registry_and_map(modbus_server, configured_tk_driver):
     assert platform.wait_for_log(r"dropping registry row 'Ghost'.*no register_map row is named 'not_in_map'", timeout=5)
     # Unit 1's registers are untouched by writes to unit 2.
     assert platform.get_point(topic('BigFloat')) != -1234.0 or REGISTERS_DICT['BigFloat'] == -1234.0
+
+
+def test_nested_device_is_polled_only_by_its_own_remote(modbus_server, configured_tk_driver):
+    """After a restart, with both devices loaded from the store, only the nested device's own remote polls its points.
+
+    Poll sets are built from each remote's point set when the Platform Driver starts. Before
+    EquipmentTree.device_points, the enclosing device's remote also claimed the nested device's points (which its
+    interface does not have), logged a failure for each on every poll, and published an empty values dict for the nested
+    device. Waits three hyperperiods after both devices re-register so that several polls of each occur.
+    """
+    platform = configured_tk_driver
+    since = platform.log_size()
+    platform.restart_agent(PLATFORM_DRIVER, 'driver')
+    assert platform.wait_for_log(r'unit 1 holding table: 14 points', since=since)
+    assert platform.wait_for_log(r'unit 2 holding table: 2 points', since=since)
+    time.sleep(3 * POLL_INTERVAL)
+    failures = [line for line in platform.log_since(since).splitlines()
+                if ('Failed to poll' in line or 'Point not configured' in line or 'No values were returned' in line)
+                and 'meter' in line]
+    assert not failures, '\n'.join(failures)
+    assert platform.get_point(f'{TK_DEVICE_TOPIC}/big_ushort') == 42
