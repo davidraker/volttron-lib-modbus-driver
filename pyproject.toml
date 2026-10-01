@@ -10,7 +10,7 @@ name = "volttron-lib-modbus-driver"
 version = "0.1.0"
 description = "Modbus driver supported and maintained by the Volttron team."
 authors = ["Mark Bonicillo <volttron@pnnl.gov>"]
-license = "Apache License 2.0"
+license = "Apache- 2.0"
 readme = "README.md"
 repository = "https://github.com/VOLTTRON/volttron-lib-modbus-driver"
 homepage = "https://github.com/VOLTTRON/volttron-lib-modbus-driver"
@@ -27,7 +27,7 @@ classifiers = [
 
 [tool.poetry.dependencies]
 python = ">=3.10,<4.0"
-protocol-proxy-modbus = ">=2.0.0rc3"
+protocol-proxy-modbus = ">=2.0.0rc1"
 volttron-lib-base-driver = ">=2.0.0rc6"
 
 [tool.poetry.group.dev.dependencies]
