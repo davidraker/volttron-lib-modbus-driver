@@ -30,7 +30,7 @@ def test_end_to_end(tmp_path):
     if proc.returncode != 0 and log.exists():
         report += '\n--- log ---\n' + log.read_text()[-4000:]
     assert proc.returncode == 0, report
-    assert '15/15 passed' in proc.stdout, report
+    assert '23/23 passed' in proc.stdout, report
 
 
 @pytest.mark.parametrize('transport', ['tcp', 'udp', 'tls'])

@@ -458,13 +458,38 @@ class TestReads:
         assert interface._tracker.get_revert_value(TOPIC('CO2Stpt')) == 1000.0   # configured default wins
 
 
+class TestWriteMode:
+    @pytest.mark.parametrize('given, expected', [
+        ({}, 'auto'), ({'write_mode': 'Single'}, 'single'), ({'write_multiple_registers': False}, 'single'),
+        ({'write_multiple_registers': 'false'}, 'single'), ({'write_multiple_registers': True}, 'multiple'),
+        ({'write_multiple_registers': False, 'write_mode': 'auto'}, 'auto'),            # the new key wins
+    ])
+    def test_modes_and_the_modbus_tk_alias(self, given, expected):
+        cfg = ModbusRemoteConfig(driver_type='modbus', device_address='10.0.0.4', **given)
+        assert cfg.write_mode.value == expected
+
+    def test_single_mode_refuses_writable_multi_register_points(self, make_interface):
+        iface = make_interface([point('Mode', 1010, 'uint16', writable=True), point('Reading', 1001, writable=False)],
+                               write_mode='single')
+        assert set(iface.point_map) == {TOPIC('Mode'), TOPIC('Reading')}
+        with pytest.raises(ValueError, match="write_mode is 'single'"):
+            iface.create_register(point('Stpt', 1003, writable=True))
+
+    def test_write_payload_carries_the_mode(self, make_interface, ppm):
+        iface = make_interface([point('Mode', 1010, 'uint16', writable=True)], write_mode='multiple')
+        iface.proxy_peer = ppm.peer
+        ppm.queue(serialized([{'address': 1010, 'count': 1}], [None]))
+        iface.set_point(TOPIC('Mode'), 4)
+        assert ppm.payloads('WRITE_REGISTERS')[0]['write_mode'] == 'multiple'
+
+
 class TestWrites:
     def test_set_point_encodes_via_proxy(self, interface, ppm):
         ppm.queue(serialized([{'address': 1010, 'count': 1}], [None]))
         assert interface.set_point(TOPIC('Mode'), 4) == 4
         [(method, payload, _)] = ppm.sent
         assert method == 'WRITE_REGISTERS'
-        assert payload == {'register_map': 'holding', 'encode': True, 'queries': [[1010, None, 4]]}
+        assert payload == {'register_map': 'holding', 'encode': True, 'write_mode': 'auto', 'queries': [[1010, None, 4]]}
         assert TOPIC('Mode') in interface._tracker.dirty_points
 
     def test_set_point_read_only(self, interface, ppm):

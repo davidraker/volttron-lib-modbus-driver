@@ -117,9 +117,12 @@ of the documentation for this component is located in the "docs" directory of th
 | `device_address` | required | Host name or IP of the device or gateway, or the serial device path (`/dev/ttyUSB0`). |
 | `transport_protocol` | `tcp` | `tcp`, `udp`, `tls`, or `serial`. |
 | `port` | 502 (802 for TLS) | TCP/UDP/TLS port. Ignored for serial. |
-| `unit_id` | 1 | Modbus unit (slave) id. `device_id` and `slave_id` are accepted aliases. Each unit gets its own device configuration; units behind one gateway share the proxy's connection to it. |
+| `unit_id` | 1 | Modbus unit (slave) id. `device_id` and `slave_id` are accepted aliases. Each unit gets its own device configuration; units behind one gateway share the proxy's connection to it. The default differs from Monolithic's `modbus` driver, whose `slave_id` defaulted to 0: a Monolithic configuration without a `slave_id` addressed unit 0 and now addresses unit 1. modbus_tk and pymodbus default to 1 as well. The specification reserves 0 for broadcast on serial lines and recommends 0xFF (255) for a Modbus TCP device addressed directly rather than through a gateway; most TCP devices answer any unit id, so set `unit_id` explicitly where the device is strict. |
 | `addressing` | `offset` | How `Point Address` is expressed: `offset` (zero-based protocol address; `exact` is a synonym), `offset_plus` (one-based), or `address` (table-prefixed, e.g. 40001 for the first holding register). |
 | `word_order` | `big` | Register order for multi-register values. `endian` is an accepted alias. A point may override this. |
+| `byte_order` | `big` | Default order of the two bytes within each register; `little` swaps them. A point's `Byte Order` column overrides it. Note: ACE's modbus_enhanced used `Mixed Endian` for this; here, as in modbus_tk, `Mixed Endian` means word order. |
+| `device_identification` | false | Read the FC43 device identification (vendor, product code, revision, model ...) when the device registers; it is logged, kept as device metadata and included in the device's health. |
+| `write_mode` | `auto` | Which write functions are used. `auto`: FC06/FC05 for a single register or coil, FC16/FC15 for more; a unit that refuses one form with ILLEGAL FUNCTION is retried with the other and remembered. `multiple`: always FC16/FC15 (some meters reject FC06). `single`: always FC06/FC05; a writable value may then not span registers. modbus_tk's `write_multiple_registers: false` is accepted as `single`. |
 | `max_gap` | 0 | Largest run of unconfigured registers the proxy may read through to merge two requests into one. |
 | `timeout` | 3 | Seconds the proxy waits for the device to answer one request before retrying. |
 | `retries` | 3 | Retries after the first attempt of each request. |
@@ -137,11 +140,14 @@ of the documentation for this component is located in the "docs" directory of th
 | `Register Name` | Name shared with a `register_map` row (see below). Also the point name when `Volttron Point Name` is absent. |
 | `Point Address` | Register (or coil) address, interpreted according to `addressing`. `Address` is accepted. Decimal, or hexadecimal with a `0x` prefix. |
 | `Modbus Register` | Data type. Also accepted under `Data Type`, `Data Format`, or `Type`. Spellings: pymodbus names (`UINT16`, `INT32`, `FLOAT32`, `FLOAT64`, `STRING`, `BITS`), modbus_tk names (`uint16`, `int32`, `float`, `double`, `string[8]`, `bool`), or struct formats (`>f`, `>H`, `4H`, `8s`). |
-| `Table` | `coil`, `discrete_input`, `holding`, or `input` (modbus_tk names such as `analog_output_holding_registers` are accepted). Optional: booleans default to `coil` when writable and `discrete_input` otherwise; everything else defaults to `holding` when writable and `input` otherwise. |
+| `Table` | `coil`, `discrete_input`, `holding`, or `input` (modbus_tk names such as `analog_output_holding_registers` are accepted), or `exception_status` for the FC07 status byte as one integer point (its address is ignored; use `value_of` and `bit` transforms for single flags). Optional: booleans default to `coil` when writable and `discrete_input` otherwise; everything else defaults to `holding` when writable and `input` otherwise. |
 | `Writable` | `TRUE` or `FALSE`. Points in read-only tables cannot be writable. |
 | `Count` | Number of registers (or coils), when the type does not imply it, e.g. a string without a length. |
 | `Word Order` / `Mixed Endian` | Per-point word order. `Mixed Endian: TRUE` is the legacy spelling of `little`. |
-| `Default Value` | Value written when the point is reverted. Otherwise the last polled value is used. |
+| `Byte Order` | Per-point byte order within each register (`big`, `little`); overrides the device's `byte_order`. |
+| `Bit` | One bit (0 to 15) of the holding or input register at `Point Address`, as a boolean point of its own; the data type may be left blank. Several `Bit` rows and a whole-word row may share one register. A writable bit is written with FC22 mask write, or by read-modify-write on a device without FC22, so the other bits are kept. |
+| `Default Value` | Raw register value written when the point is reverted. Otherwise the last polled value is used. |
+| `Transform` | Conversion between the raw register value and the published value, applied by the platform driver framework for every interface: one function such as `scale(0.1)`, `mod10k(True)`, `scale_reg(scaling_point)` or `sunssf(W_SF)`, or several as `transform(scale(0.1), add(-40))`. Reads apply it, writes apply its inverse. See the base driver's documentation of point transforms. |
 | `Units`, `Notes` | Metadata published with the point. |
 
 ### modbus_tk configurations
@@ -154,6 +160,27 @@ Where a registry row and its map row both supply a field, the registry row wins;
 the map. A row that lacks an address or type and has no matching `Register Name` in the map is dropped with a warning
 and the rest of the device is configured. A map file may also be used directly as the registry: each row is then
 published under its `Register Name`.
+
+### Legacy configurations
+
+* A device address that is a serial port (`/dev/...`, `COM3`) or modbus_tk's `port: 0` with no `transport_protocol`
+  is taken as serial.
+* Two rows naming the same register: when they declare it alike and the first has no transform, the later row is read
+  as a derived point, `value_of` the first, and a warning says so; otherwise it is dropped with a warning. Write the
+  derived point explicitly (`Data Source` virtual) if that is what is meant.
+* Legacy device keys are handled or explained in the log: `write_multiple_registers` and `retry_attempts` are read
+  as `write_mode` and `retries`, `ip_address` as `device_address`; `xonxoff`, `name`, `device_type` and `retry_backoff`
+  are ignored with a note saying why. Any other unknown key is listed in a warning.
+* A `bool` data type in a holding or input register is one boolean (non-zero is true), as in modbus_tk; `bits` is
+  the 16-bit list. `array(int16, 4)` is accepted for `int16[4]`.
+
+### Device-level operations
+
+Through the platform driver's `call` RPC (`vctl driver call`), on any topic of the device: `read_device_information`
+(FC43, `read_code` 1 basic, 2 regular, 3 extended, 4 one `object_id`), `read_exception_status` (FC07),
+`modbus_diagnostics` (FC08 sub-functions, FC17, FC11/12: `function` such as `query_data`, `bus_message_count`,
+`report_device_id`, `comm_event_counter`), `file_record` (FC20/FC21, `action` and `records`) and `modbus_status`
+(the proxy's counters for the connection and unit).
 
 ### Pad registers
 

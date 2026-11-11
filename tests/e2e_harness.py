@@ -5,7 +5,10 @@ from gevent import monkey; monkey.patch_all()
 import gevent, logging, socket, subprocess, sys, time
 from pathlib import Path
 logging.basicConfig(filename=__import__('os').environ.get('MODBUS_E2E_LOG', '/tmp/modbus_e2e.log'), level=logging.DEBUG, format='%(asctime)s %(name)s %(levelname)s %(message)s')
+from types import SimpleNamespace
+from unittest import mock
 from volttron.driver.base.config import RemoteConfig
+from volttron.driver.base.driver import DriverAgent
 from volttron.driver.interfaces.modbus.modbus import Modbus
 from volttron.driver.interfaces.modbus.config import ModbusPointConfig
 
@@ -68,6 +71,46 @@ try:
     results, _ = iface.get_multiple_points([T('CO2Stpt'), T('Mode'), T('Name'), T('FanCmd')])
     check('revert_all: default restored', results.get(T('CO2Stpt')) == 1000.0, str(results.get(T('CO2Stpt'))))
     check('revert_all: clean values restored', results.get(T('Mode')) == 3 and results.get(T('Name')) == 'RTU-7' and results.get(T('FanCmd')) is False, str(results))
+
+    # ---- The Transform column, applied by DriverAgent around a second interface on the same proxy and device. Its
+    # registration replaces the first interface's register tables on the proxy, so it comes last.
+    class Node(SimpleNamespace):
+        @property
+        def data_source(self): return self.config.data_source
+    class Tree:
+        def __init__(self): self.nodes = {}
+        def add_points(self, device, configs):
+            for c in configs:
+                t = f'{device}/{c.volttron_point_name}'
+                self.nodes[t] = Node(identifier=t, config=c, last_value=None, last_updated=None, is_point=True, meta_data={}, active=True)
+        def get_node(self, t): return self.nodes.get(t)
+        def device_points(self, device): return [n for t, n in self.nodes.items() if t.rsplit('/', 1)[0] == device]
+        def is_active(self, t): return True
+    D = 'campus/b/meter'; M = f'{D}/{{}}'.format
+    tree = Tree()
+    rows = [ModbusPointConfig(**r) for r in (
+        dict(volttron_point_name='Temp', address=1010, data_type='int16', writable=False, transform='scale(0.1)'),
+        dict(volttron_point_name='CO2', address=1001, data_type='>f', writable=False, transform='sunssf(Mode)'),        # Mode (3) stands in for a SunSpec factor
+        dict(volttron_point_name='Mode', address=1010, data_type='uint16', writable=True),
+        dict(volttron_point_name='Stpt', address=1003, data_type='>f', writable=True, transform='transform(scale(0.1), add(-40))'),
+        dict(volttron_point_name='Unimpl', address=1010, data_type='int16', writable=False, transform='invalid(-7)'),  # the device reports the sentinel
+        dict(volttron_point_name='Sum', data_source='virtual', transform='sum_of(Temp, Mode)', address=0, data_type='uint16'))]
+    tree.add_points(D, rows)
+    agent = DriverAgent(RemoteConfig(driver_type='modbus', device_address='127.0.0.1', port=PORT, unit_id=1, timeout=15),
+                        core=Core(), equipment_model=tree, scalability_test=None, tz='UTC', unique_id='meter', vip=mock.Mock())
+    agent.add_registers(rows, D)
+    check('transforms: derived point kept from the interface', M('Sum') not in agent.interface.point_map and agent.interface.proxy_peer is not None)
+    results, errors = agent.get_multiple_points([M('Temp'), M('CO2'), M('Mode'), M('Unimpl')])
+    print('  results:', {k.split('/')[-1]: v for k, v in results.items()}); print('  errors:', {k.split('/')[-1]: v for k, v in errors.items()})
+    check('transforms: scale on a decoded int16', results.get(M('Temp')) == -0.7, str(results.get(M('Temp'))))
+    check('transforms: factor from the same poll', results.get(M('CO2')) == 412500.0, str(results.get(M('CO2'))))
+    check('transforms: sentinel held out with an error', M('Unimpl') not in results and 'produced no value' in errors.get(M('Unimpl'), ''), str(errors.get(M('Unimpl')))[:80])
+    tree.nodes[M('Mode')].last_value = 1
+    check('transforms: factor from last_value', agent.get_point(M('CO2')) == 4125.0)
+    tree.nodes[M('Temp')].last_value = -0.7
+    check('transforms: derived from last values', abs(agent.get_point(M('Sum')) - 0.3) < 1e-9, str(agent.get_point(M('Sum'))))
+    check('transforms: write inverts to the raw register', agent.set_point(M('Stpt'), 10.0) == 10.0 and iface.get_point(T('CO2Stpt')) == 500.0)
+    check('transforms: engineering value read back', agent.get_point(M('Stpt')) == 10.0)
 finally:
     for peer in list(getattr(iface.ppm, 'peers', {}).values()) if 'iface' in dir() else []:
         proc = getattr(peer, 'process', None)

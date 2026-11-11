@@ -56,13 +56,13 @@ import logging
 from collections import defaultdict
 from typing import Any, cast
 
-from protocol_proxy.protocol.modbus.registers import DATATYPE, PAD, RegisterSpec, parse_type_spec
+from protocol_proxy.protocol.modbus.registers import DATATYPE, PAD, RegisterSpec, is_boolean_spelling, parse_type_spec
 
 from volttron.driver.base.interfaces import BaseInterface, BaseRegister, BasicRevert
 from volttron.driver.base.proxy_interface import PointError, ProxyBackedInterface
 
-from .config import (DriverRole, ModbusPointConfig, ModbusRemoteConfig, ROLE_ALIASES, Table, TransportProtocol,
-                     merge_register_map, normalize_register_map)
+from .config import (ByteOrder, DriverRole, LEGACY_COLUMN_HINTS, ModbusPointConfig, ModbusRemoteConfig, ROLE_ALIASES,
+                     Table, TransportProtocol, WriteMode, merge_register_map, normalize_register_map, register_name_of)
 
 _log = logging.getLogger(__name__)
 _POLLED_SOURCES = {'short_poll', 'long_poll', 'poll_once', 'shortpoll', 'longpoll', 'pollonce'}
@@ -71,15 +71,20 @@ PYTHON_TYPES = {DATATYPE.BITS: bool, DATATYPE.STRING: str, DATATYPE.FLOAT32: flo
 
 
 class ModbusRegister(BaseRegister):
-    """One point (or pad) on a Modbus device: where it lives and how the proxy should decode it."""
+    """One point (or pad) on a Modbus device: where it lives and how the proxy should decode it. A ``bit`` register is
+    one bit of a holding or input register, read from the word the proxy decodes and written with a mask write."""
 
     def __init__(self, point_name: str, units: str, read_only: bool, table: Table, spec: RegisterSpec,
-                 description: str = '', default_value: Any = None):
+                 description: str = '', default_value: Any = None, bit: int | None = None):
         # The base driver only distinguishes 'bit' from 'byte' to label booleans in publish metadata.
         super().__init__('bit' if table.is_bits else 'byte', read_only, point_name, units, description=description)
         self.table = table
         self.spec = spec
-        self.python_type = bool if table.is_bits else PYTHON_TYPES.get(spec.data_type, int)
+        self.bit = bit
+        if table.is_bits or bit is not None or getattr(spec, 'boolean', False):
+            self.python_type = bool
+        else:
+            self.python_type = PYTHON_TYPES.get(spec.data_type, int)
         self.default_value = default_value       # Value to revert to, already coerced to python_type; None if unset.
         self.remote_writable = False             # Slave role: whether the master may write this point.
 
@@ -97,6 +102,8 @@ class ModbusRegister(BaseRegister):
                   'word_order': self.spec.word_order}
         if self.spec.byte_swap:
             fields['byte_swap'] = True
+        if getattr(self.spec, 'boolean', False):
+            fields['boolean'] = True
         if self.spec.data_type is DATATYPE.STRING:
             fields['string_encoding'] = self.spec.string_encoding
         return fields
@@ -112,6 +119,11 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
     PROXY_NAME, PROXY_LABEL = 'modbus', 'Modbus Proxy'
     REGISTER_METHOD, READ_METHOD, WRITE_METHOD = 'REGISTER_REMOTE', 'READ_REGISTERS', 'WRITE_REGISTERS'
     REQUEST_ERROR_KEY = 'device'
+    # Device-level operations reachable through the platform driver's ``call`` RPC (see the methods at the end).
+    interface_callable_methods = {'read_device_information', 'read_exception_status', 'modbus_diagnostics',
+                                  'file_record', 'modbus_status'}
+    # Legacy registry columns the platform driver should warn about, with what replaces them.
+    LEGACY_COLUMN_HINTS = LEGACY_COLUMN_HINTS
 
     def __init__(self, config, *args, **kwargs):
         BaseInterface.__init__(self, config, *args, **kwargs)
@@ -120,6 +132,10 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
         # Pads: registry rows with data type 'pad', read to keep polls contiguous but never published.
         self.pads: dict[Table, list[RegisterSpec]] = defaultdict(list)
         self.topics_by_address: dict[tuple[Table, int], str] = {}
+        self.device_identification: dict | None = None     # FC43 objects, read at registration when configured
+        if unknown := self.config.unknown_keys():
+            _log.warning(f'{self.config.device_address}: configuration keys not used by the Modbus driver: '
+                         f'{", ".join(unknown)}.')
         if self.config.is_server:
             # A served unit is read and written by topic, and the master's writes come back as pushes.
             self.READ_METHOD, self.WRITE_METHOD, self.PUSH_METHOD = 'READ_POINTS', 'WRITE_POINTS', 'RECEIVE_WRITES'
@@ -151,6 +167,22 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
             raise ValueError(f"Point {point.volttron_point_name} is writable but the {table.value} table is read-only.")
         if table.is_bits and data_type not in (DATATYPE.BITS, PAD):
             raise ValueError(f"Point {point.volttron_point_name}: {table.value} table holds booleans, not {data_type.name}.")
+        if point.bit is not None:
+            if served or table.is_bits or table is Table.exception_status or is_pad:
+                raise ValueError(f"Point {point.volttron_point_name}: Bit applies to a holding or input register of a"
+                                 f" device this driver reads, not to the {table.value} table or a served unit.")
+            if data_type not in (DATATYPE.UINT16, DATATYPE.INT16):
+                raise ValueError(f"Point {point.volttron_point_name}: a Bit point's register is one 16-bit register,"
+                                 f" not {data_type.name}.")
+        if table is Table.exception_status:
+            if served or point.writable:
+                raise ValueError(f"Point {point.volttron_point_name}: exception_status is read from a device by FC07;"
+                                 " it cannot be written or served.")
+            spec = RegisterSpec(0, DATATYPE.UINT16)
+            register = ModbusRegister(point.volttron_point_name, point.units, True, table, spec,
+                                      description=point.description or point.notes)
+            return register
+        byte_order = point.byte_order or self.config.byte_order
         if point.word_order:
             word_order = point.word_order.value
         elif point.mixed_endian:
@@ -162,12 +194,18 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
         try:
             spec = RegisterSpec(self.config.addressing.resolve(point.address, table), data_type,
                                 count=point.count if point.count is not None else count,
-                                word_order=word_order, string_encoding=point.string_encoding, byte_swap=little_endian)
+                                word_order=word_order, string_encoding=point.string_encoding,
+                                byte_swap=little_endian or byte_order is ByteOrder.little,
+                                boolean=is_boolean_spelling(point.data_type))
         except ValueError as e:
             raise ValueError(f"Point {point.volttron_point_name}: {e}") from e
 
+        if (point.writable and not is_pad and not served and spec.count > 1
+                and self.config.write_mode is WriteMode.single):
+            raise ValueError(f"Point {point.volttron_point_name} spans {spec.count} registers and is writable, which"
+                             f" needs the multiple-write function, but write_mode is 'single'.")
         register = ModbusRegister(point.volttron_point_name, point.units, not point.writable, table, spec,
-                                  description=point.description or point.notes)
+                                  description=point.description or point.notes, bit=point.bit)
         register.remote_writable = served and not is_pad and point.resolved_remote_writable(table)
         if point.writable and not is_pad and point.default_value not in (None, ''):
             try:
@@ -186,7 +224,8 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
             return
         super().insert_register(register, base_topic)
         topic = '/'.join([base_topic, register.point_name])
-        self.topics_by_address[(register.table, register.address)] = topic
+        if register.bit is None:
+            self.topics_by_address[(register.table, register.address)] = topic
         if register.default_value is not None:
             self.set_default(topic, register.default_value)     # Revert values are tracked by full topic.
 
@@ -204,7 +243,7 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
         role = getattr(remote_config, 'driver_role', None) if remote_config is not None else self.config.driver_role
         role = getattr(role, 'value', role)
         if ROLE_ALIASES.get(role, role) != DriverRole.slave.value:
-            return rows
+            return self._collapse_duplicate_addresses(rows)
         # Served rows take the server data source and default to being writable by the platform (they are what it
         # serves). A polling data source (a registry shared with the client role, where it says how often a master
         # reads) means nothing to a served unit, so it is replaced; static and never_poll are kept.
@@ -220,6 +259,53 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
             prepared.append(row)
         return prepared
 
+    def _collapse_duplicate_addresses(self, rows: list[dict]) -> list[dict]:
+        """Two rows naming the same register: the later becomes a derived point (``value_of`` the first) when the two
+        declare the register alike and the first carries no transform of its own; otherwise it is dropped. Either
+        way the device configures, and the log says what to write instead. Pads, bit points and exception-status
+        rows are left alone (they share registers by design)."""
+        seen: dict[tuple[Table, int], tuple[str, Any, int | None, str]] = {}
+        out = []
+        device = str(self.config.device_address)
+        for row in rows:
+            try:
+                cfg = ModbusPointConfig(**row)
+                if cfg.is_pad or cfg.bit is not None or cfg.table is Table.exception_status or cfg.is_served:
+                    raise LookupError
+                data_type, count, _ = parse_type_spec(cfg.data_type)
+                table = cfg.table or self._default_table(data_type, cfg.writable)
+                address = self.config.addressing.resolve(cfg.address, table)
+            except Exception:                                   # not a row this concerns, or one validation will report
+                out.append(row)
+                continue
+            key, count = (table, address), cfg.count if cfg.count is not None else count
+            if key not in seen:
+                seen[key] = (cfg.volttron_point_name, data_type, count, (cfg.transform or '').strip())
+                out.append(row)
+                continue
+            first_name, first_type, first_count, first_transform = seen[key]
+            name = cfg.volttron_point_name
+            if (data_type, count) == (first_type, first_count) and not first_transform:
+                reference = first_name if first_name.isidentifier() else repr(first_name)
+                chain = f'value_of({reference})'
+                existing = (cfg.transform or '').strip()
+                if existing:
+                    inner = existing[len('transform('):-1] if existing.startswith('transform(') and existing.endswith(')') else existing
+                    chain = f'transform({chain}, {inner})'
+                converted = {k: v for k, v in row.items()
+                             if k not in ('data_source', 'Data Source', 'transform', 'Transform')}
+                converted.update({'data_source': 'virtual', 'transform': chain})
+                _log.warning(f"{device}: {name} names the same {table.value} register {cfg.address} as {first_name};"
+                             f" it is read as a derived point with Transform {chain!r}. Write that in the registry"
+                             " (Data Source virtual) if this is intended.")
+                out.append(converted)
+            else:
+                _log.warning(f"{device}: dropping {name}: it names the same {table.value} register {cfg.address} as"
+                             f" {first_name} but declares it differently, or {first_name} has a transform of its own."
+                             f" Make {name} a derived point (Data Source virtual, Transform value_of({first_name}) ...)"
+                             " or give it its own register.")
+        return out
+
     # ------------------------------------------------------------------ the proxy exchange, in Modbus terms
 
     def identity_fields(self) -> dict:
@@ -229,10 +315,22 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
         """This device's client settings and its register data types, by table; a served unit's rows add the topic,
         whether the master may write the point, and its starting value."""
         tables: dict[str, list[dict]] = defaultdict(list)
+        declared: dict[tuple[Table, int], tuple[dict, str]] = {}
         for topic, register in self.point_map.items():
+            if register.table is Table.exception_status:
+                continue                                        # FC07 has no register to declare
             fields = register.spec_fields()
             if self.is_server:
                 fields.update({'topic': topic, 'remote_writable': register.remote_writable, 'initial_value': register.default_value})
+            key = (register.table, register.address)
+            if key in declared:
+                # Several points may share one register (a word and its bits); they must agree on what it is.
+                earlier, earlier_topic = declared[key]
+                if earlier != fields:
+                    raise ValueError(f'{topic} and {earlier_topic} declare the same {register.table.value} register'
+                                     f' {register.address} differently: {fields} vs {earlier}.')
+                continue
+            declared[key] = (fields, topic)
             tables[register.table.value].append(fields)
         for table, pads in self.pads.items():
             tables[table.value].extend({'address': pad.address, 'data_type': 'PAD', 'count': pad.count} for pad in pads)
@@ -253,6 +351,24 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
             _log.info(f"Modbus {self.config.device_address} unit {self.config.unit_id} {table} table:"
                       f" {summary.get('specs')} points, {summary.get('pads')} pads,"
                       f" {len(summary.get('blocks', []))} request(s) per poll.")
+        if self.config.device_identification:
+            objects = self._read_identification()
+            if objects:
+                self.device_identification = objects
+                _log.info(f"Modbus {self.config.device_address} unit {self.config.unit_id} identifies itself as: "
+                          + ', '.join(f'{k}={v}' for k, v in objects.items()))
+
+    def _read_identification(self) -> dict:
+        """The basic and regular FC43 objects, merged; what the device did not answer is left out."""
+        objects: dict = {}
+        for read_code in (1, 2):
+            result, errors = self.request('READ_DEVICE_INFORMATION', {'read_code': read_code}, ['device_information'])
+            if errors:
+                if read_code == 1:
+                    _log.warning(f'{self.config.device_address}: device identification not read: {errors}')
+                break
+            objects.update((result or {}).get('objects') or {})
+        return objects
 
     def split_reads(self, topics: list[str], **kwargs) -> list[tuple[dict, list[str]]]:
         """One READ_REGISTERS per table; a partial table names its queries, a whole one lets the proxy use its blocks.
@@ -264,11 +380,31 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
             by_table[cast(ModbusRegister, self.point_map[topic]).table].append(topic)
         batches = []
         for table, batch in by_table.items():
+            if table is Table.exception_status:
+                batches.append(({'register_map': table.value, 'queries': [[0, 1]]}, batch))      # FC07: one raw value
+                continue
             payload = {'register_map': table.value, 'decode': True}         # the header's remote id names device and unit
             if len(batch) < self._point_count(table):
                 payload['queries'] = self._queries_for(table, [cast(ModbusRegister, self.point_map[t]) for t in batch])
             batches.append((payload, batch))
         return batches
+
+    def interpret_read(self, topics: list[str], result: Any, request_errors: Any) -> tuple[dict, dict]:
+        """A raw FC07 reply is a list holding the one status value; every other table answers by address."""
+        if topics and cast(ModbusRegister, self.point_map[topics[0]]).table is Table.exception_status:
+            if isinstance(result, list) and result and isinstance(result[0], list) and result[0]:
+                return {topic: int(result[0][0]) for topic in topics}, {}
+            message = (request_errors[0] if isinstance(request_errors, list) and request_errors and request_errors[0]
+                       else request_errors or 'No value returned by the Modbus Proxy.')
+            return {}, {topic: str(message) for topic in topics}
+        return ProxyBackedInterface.interpret_read(self, topics, result, request_errors)
+
+    def read_result(self, register: BaseRegister, entry: Any) -> Any:
+        """A bit point takes its bit from the decoded word of the register it shares."""
+        register = cast(ModbusRegister, register)
+        if register.bit is not None:
+            return bool(int(entry) >> register.bit & 1)
+        return entry
 
     def read_key(self, topic: str, register: BaseRegister) -> str:
         if self.is_server:
@@ -298,8 +434,13 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
         by_table: dict[Table, list[tuple[str, Any]]] = defaultdict(list)
         for topic, value in items:
             by_table[cast(ModbusRegister, self.point_map[topic]).table].append((topic, value))
-        return [({'register_map': table.value, 'encode': True,
-                  'queries': [[cast(ModbusRegister, self.point_map[t]).address, None, v] for t, v in batch]}, batch)
+        def query(topic: str, value: Any) -> list:
+            register = cast(ModbusRegister, self.point_map[topic])
+            if register.bit is not None:
+                return [register.address, None, bool(value), register.bit]         # one bit: FC22 or read-modify-write
+            return [register.address, None, value]
+        return [({'register_map': table.value, 'encode': True, 'write_mode': self.config.write_mode.value,
+                  'queries': [query(t, v) for t, v in batch]}, batch)
                 for table, batch in by_table.items()]
 
     def interpret_write(self, items: list[tuple[str, Any]], result: Any, request_errors: Any) -> tuple[dict, dict]:
@@ -334,6 +475,71 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
 
     def _point_count(self, table: Table) -> int:
         return sum(1 for r in self.point_map.values() if r.table is table)
+
+    # ------------------------------------------------------------------ device-level operations (the ``call`` RPC)
+    def _device_topics(self, topics: list[str]) -> list[str]:
+        """The device topics the given point or device topics belong to; this remote's devices when none are given."""
+        found = []
+        for topic in topics or []:
+            device = topic.rsplit('/', 1)[0] if topic in self.point_map else topic
+            if device not in found:
+                found.append(device)
+        if not found:
+            found = [getattr(node, 'identifier', str(self.config.device_address))
+                     for node in getattr(self.driver_agent, 'equipment', ())] or [str(self.config.device_address)]
+        return found
+
+    def _device_call(self, topics: list[str], method: str, payload: dict, error_key: str) -> tuple[dict, dict]:
+        self._require_peer()
+        result, errors = self.request(method, payload, [error_key])
+        devices = self._device_topics(topics)
+        if errors:
+            return {}, {device: str(errors.get(error_key, errors)) for device in devices}
+        return {device: result for device in devices}, {}
+
+    def read_device_information(self, topics: list[str], read_code: int = 1, object_id: int = 0) -> tuple[dict, dict]:
+        """FC43/14: read_code 1 basic (vendor, product code, revision), 2 regular (URL, product, model, application),
+        3 extended (device-specific), 4 one object named by object_id."""
+        return self._device_call(topics, 'READ_DEVICE_INFORMATION', {'read_code': int(read_code), 'object_id': int(object_id)},
+                                 'device_information')
+
+    def read_exception_status(self, topics: list[str]) -> tuple[dict, dict]:
+        """FC07: the unit's eight exception status bits, as an integer and a list of booleans."""
+        return self._device_call(topics, 'READ_EXCEPTION_STATUS', {}, 'exception_status')
+
+    def modbus_diagnostics(self, topics: list[str], function: str, **arguments) -> tuple[dict, dict]:
+        """FC08 sub-functions, FC17 report server id and FC11/FC12 event counters, by name (query_data, clear_counters,
+        bus_message_count, report_device_id, comm_event_counter ...)."""
+        return self._device_call(topics, 'DIAGNOSTICS', {'function': function, 'arguments': arguments}, 'diagnostics')
+
+    def file_record(self, topics: list[str], action: str = 'read', records: list[dict] | None = None) -> tuple[dict, dict]:
+        """FC20/FC21: read or write file records (file_number, record_number, record_length; record_data for a write)."""
+        return self._device_call(topics, 'FILE_RECORD', {'action': action, 'records': records or []}, 'file_record')
+
+    def modbus_status(self, topics: list[str]) -> tuple[dict, dict]:
+        """The proxy's health counters for this device's connection and unit."""
+        return self._device_call(topics, 'CLIENT_STATUS', {}, 'status')
+
+    def health(self) -> dict:
+        """Protocol health for the base driver's remote health record: the proxy's counters for this connection and
+        unit, the write functions the unit refused, and the device identification when it was read."""
+        health: dict = {'protocol': 'modbus', 'transport': self.config.transport_protocol.value,
+                        'device_address': self.config.device_address, 'unit_id': self.config.unit_id}
+        if self.device_identification:
+            health['device_identification'] = self.device_identification
+        if self.proxy_peer is None:
+            health['proxy'] = 'not connected'
+            return health
+        result, errors = self.request('CLIENT_STATUS', {}, ['status'])
+        if errors:
+            health['proxy'] = f'status unavailable: {errors}'
+        elif isinstance(result, dict):
+            unit = (result.get('units') or {}).get(str(self.config.unit_id), {})
+            health.update({'connected': result.get('connected'), 'connection': result.get('connection'), 'unit': unit,
+                           'refused_single_writes': result.get('refused_single_writes'),
+                           'refused_multiple_writes': result.get('refused_multiple_writes'),
+                           'refused_mask_writes': result.get('refused_mask_writes')})
+        return health
 
     @staticmethod
     def _describe_read_error(register: ModbusRegister, request_errors: dict) -> str:

@@ -2,6 +2,7 @@
 driver reaches as a master (``driver_role: master``, the default) or a Modbus TCP unit this driver serves to a remote
 master (``driver_role: slave``)."""
 import logging
+import re
 
 from enum import Enum
 from typing import Any
@@ -23,19 +24,26 @@ ROLE_ALIASES = {'client': 'master', 'server': 'slave', 'outstation': 'slave'}
 
 
 class Table(str, Enum):
-    """The four Modbus data tables, named as the Modbus Protocol Proxy knows them."""
+    """The four Modbus data tables, named as the Modbus Protocol Proxy knows them, plus ``exception_status``: the eight
+    device-defined status bits FC07 returns, read as one integer point (no address)."""
     coil = 'coil'
     discrete_input = 'discrete_input'
     holding = 'holding'
     input = 'input'
+    exception_status = 'exception_status'
 
     @property
     def read_only(self) -> bool:
-        return self in (Table.discrete_input, Table.input)
+        return self in (Table.discrete_input, Table.input, Table.exception_status)
 
     @property
     def is_bits(self) -> bool:
         return self in (Table.coil, Table.discrete_input)
+
+    @property
+    def is_register_table(self) -> bool:
+        """Holds registers the proxy declares and polls by address."""
+        return self in (Table.coil, Table.discrete_input, Table.holding, Table.input)
 
 
 # Accepted spellings of table names, including those used by the modbus_tk driver.
@@ -47,6 +55,7 @@ TABLE_ALIASES: dict[str, Table] = {
     'analog_output_holding_registers': Table.holding, 'analog_output': Table.holding,
     'input': Table.input, 'input_register': Table.input, 'input_registers': Table.input,
     'analog_input_registers': Table.input, 'analog_input': Table.input,
+    'exception_status': Table.exception_status, 'exception': Table.exception_status,
 }
 
 # First address of each table in "Modbus addressing" (e.g., 40001 is the first holding register).
@@ -81,6 +90,42 @@ class Addressing(str, Enum):
 class WordOrder(str, Enum):
     big = 'big'
     little = 'little'
+
+
+class ByteOrder(str, Enum):
+    """Order of the two bytes within each register. ``little`` swaps them (the proxy's byte_swap)."""
+    big = 'big'
+    little = 'little'
+
+
+_BYTE_ORDER_SPELLINGS = {'big': 'big', '>': 'big', 'be': 'big', 'little': 'little', '<': 'little', 'le': 'little'}
+_WORD_ORDER_SPELLINGS = {'big': 'big', '>': 'big', 'high': 'big', 'little': 'little', '<': 'little', 'le': 'little', 'low': 'little'}
+# Keys of the legacy drivers' device configurations that mean nothing here, with what replaces them.
+LEGACY_REMOTE_KEYS = {
+    'xonxoff': 'software flow control is not available in pymodbus; the key is ignored',
+    'name': 'the device is named by its topic; the key is ignored',
+    'device_type': 'the key is ignored (transport_protocol names the transport)',
+    'retry_backoff': 'pymodbus spaces reconnects with its own exponential backoff; the key is ignored',
+    'precision': 'use round(n) in the Transform column',
+}
+# Legacy registry columns that mean nothing here, with what replaces them.
+LEGACY_COLUMN_HINTS = {
+    'precision': 'use round(n) in the Transform column',
+    'mixed': 'use Mixed Endian or Word Order',
+}
+_SERIAL_DEVICE = re.compile(r'^(/dev/|COM\d+$|\\\\\.\\COM\d+$)', re.IGNORECASE)
+
+
+class WriteMode(str, Enum):
+    """Which Modbus write functions the proxy uses for this device.
+
+    auto: FC06/FC05 for one register or coil, FC16/FC15 for more; a unit that refuses one form with ILLEGAL FUNCTION
+    is retried with the other and remembered. multiple: always FC16/FC15 (some meters reject FC06). single: always
+    FC06/FC05, so a writable value may not span registers (modbus_tk's ``write_multiple_registers: false``).
+    """
+    auto = 'auto'
+    single = 'single'
+    multiple = 'multiple'
 
 
 class Parity(str, Enum):
@@ -143,8 +188,10 @@ def register_name_of(row: dict) -> str | None:
 
 
 def row_is_complete(row: dict) -> bool:
-    """Whether a registry row can be validated on its own: it names both an address and a data type."""
-    return _first_value(row, _ADDRESS_KEYS) is not None and _first_value(row, _DATA_TYPE_KEYS) is not None
+    """Whether a registry row can be validated on its own: it names an address and a data type (or a Bit, whose
+    register is a uint16)."""
+    return _first_value(row, _ADDRESS_KEYS) is not None and (_first_value(row, _DATA_TYPE_KEYS) is not None
+                                                             or _first_value(row, ('bit', 'Bit')) is not None)
 
 
 def _describe_row(row: dict) -> str:
@@ -221,15 +268,20 @@ class ModbusPointConfig(PointConfig):
     # holding/input.
     table: Table | None = Field(default=None, validation_alias=AliasChoices('table', 'Table'))
     word_order: WordOrder | None = Field(default=None, validation_alias=AliasChoices('word_order', 'Word Order'))
+    # Order of the bytes within each register; 'little' swaps them. Defaults from the device's byte_order.
+    byte_order: ByteOrder | None = Field(default=None, validation_alias=AliasChoices('byte_order', 'Byte Order'))
     # Legacy spelling of word_order='little'.
     mixed_endian: bool = Field(default=False, validation_alias=AliasChoices('mixed_endian', 'Mixed Endian', 'mixed'))
+    # One bit of a holding or input register as a boolean point of its own: the register is Point Address, the bit
+    # 0 (least significant) to 15. Written with FC22 mask write (or read-modify-write) so the other bits are kept.
+    bit: int | None = Field(default=None, ge=0, le=15, validation_alias=AliasChoices('bit', 'Bit'))
     string_encoding: str = Field(default='utf-8', validation_alias=AliasChoices('string_encoding', 'String Encoding'))
     default_value: Any = Field(default=None, validation_alias=AliasChoices('default_value', 'Default Value'))
     description: str = Field(default='', validation_alias=AliasChoices('description', 'Description'))
     # Kept for modbus_tk registry compatibility; a synonym for reference_point_name.
     register_name: str = Field(default='', validation_alias=AliasChoices('register_name', 'Register Name'))
-    # TODO: transform is not yet implemented; it should be handled by the base driver for all interfaces.
-    transform: str = Field(default='', validation_alias=AliasChoices('transform', 'Transform'))
+    # The Transform column (modbus_tk's scale(0.1), mod10k(True), scale_reg(...) and the rest) is PointConfig.transform,
+    # compiled and applied by the base driver's DriverAgent; this interface reads and writes raw register values only.
 
     @model_validator(mode='before')
     @classmethod
@@ -286,7 +338,29 @@ class ModbusPointConfig(PointConfig):
     @field_validator('word_order', mode='before')
     @classmethod
     def _normalize_word_order(cls, v):
-        return _lower_or_none(v)
+        v = _lower_or_none(v)
+        return _WORD_ORDER_SPELLINGS.get(v, v) if isinstance(v, str) else v
+
+    @field_validator('byte_order', mode='before')
+    @classmethod
+    def _normalize_byte_order(cls, v):
+        v = _lower_or_none(v)
+        return _BYTE_ORDER_SPELLINGS.get(v, v) if isinstance(v, str) else v
+
+    @field_validator('bit', mode='before')
+    @classmethod
+    def _empty_bit(cls, v):
+        return None if v == '' else v
+
+    @model_validator(mode='before')
+    @classmethod
+    def _bit_points_default_to_uint16(cls, data):
+        """A Bit row names the register, so its data type may be left blank: the register is read as a uint16."""
+        if isinstance(data, dict) and _first_value(data, ('bit', 'Bit')) is not None \
+                and _first_value(data, _DATA_TYPE_KEYS) is None:
+            data = {k: v for k, v in data.items() if k not in _DATA_TYPE_KEYS}
+            data['data_type'] = 'uint16'
+        return data
 
     @field_validator('count', mode='before')
     @classmethod
@@ -367,10 +441,26 @@ class ModbusRemoteConfig(RemoteConfig):
                                    description='How registry addresses are counted: offset (0-based), address '
                                                '(1-based) or offset_plus.',
                                    json_schema_extra={'group': 'Protocol and timing', 'order': 60})
+    # Default byte order within each register; 'little' swaps the two bytes. A point may override it.
+    byte_order: ByteOrder = Field(default=ByteOrder.big,
+                                  description="Default order of the two bytes in each register; 'little' swaps them. "
+                                              'A point may override it.',
+                                  json_schema_extra={'group': 'Protocol and timing', 'order': 75})
+    # Read the device identification objects (FC43: vendor, product code, revision, model ...) at registration.
+    device_identification: bool = Field(default=False,
+                                        description='Read the device identification (FC43: vendor, product, revision, '
+                                                    'model) when the device registers and keep it as device metadata.',
+                                        json_schema_extra={'group': 'Device', 'order': 30})
     # Default word order for multi-register values; a point may override it.
     word_order: WordOrder = Field(default=WordOrder.big, validation_alias=AliasChoices('word_order', 'endian'),
                                   description='Default word order for multi-register values; a point may override it.',
                                   json_schema_extra={'group': 'Protocol and timing', 'order': 70})
+    # Which write functions to use; see WriteMode. modbus_tk's write_multiple_registers (true/false) is accepted.
+    write_mode: WriteMode = Field(default=WriteMode.auto,
+                                  description='auto: FC06/FC05 for one register or coil and FC16/FC15 for more, '
+                                              'learning what the unit refuses; single: FC06/FC05 only; multiple: '
+                                              'FC16/FC15 only.',
+                                  json_schema_extra={'group': 'Protocol and timing', 'order': 95})
     # Largest run of unconfigured registers the proxy may read through to merge two requests into one.
     max_gap: int = Field(default=0, ge=0,
                          description='Largest run of unconfigured registers the proxy may read through to merge two '
@@ -424,6 +514,45 @@ class ModbusRemoteConfig(RemoteConfig):
                                                         'completes registry rows lacking an address or data type.',
                                             json_schema_extra={'group': 'Proxy', 'advanced': True, 'order': 250})
 
+    @model_validator(mode='before')
+    @classmethod
+    def _legacy_keys_and_serial_inference(cls, data):
+        """Legacy device configurations: ACE's ``ip_address`` and ``retry_attempts`` map to device_address and
+        retries; keys that mean nothing here are logged with what replaces them; a serial device path (or modbus_tk's
+        ``port: 0``) without a transport_protocol means serial."""
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        device = data.get('device_address') or data.get('ip_address') or ''
+        if 'ip_address' in data and 'device_address' not in data:
+            data['device_address'] = data.pop('ip_address')
+        if 'retry_attempts' in data and 'retries' not in data:
+            data['retries'] = data.pop('retry_attempts')
+            _log.info(f'{device}: retry_attempts is read as retries.')
+        for key, hint in LEGACY_REMOTE_KEYS.items():
+            if key in data:
+                _log.warning(f'{device}: configuration key {key!r} is not used: {hint}.')
+        if not any(k in data for k in ('transport_protocol', 'transport')):
+            address = str(device)
+            port = data.get('port')
+            if _SERIAL_DEVICE.match(address) or port in (0, '0'):
+                data['transport_protocol'] = 'serial'
+                _log.info(f'{device}: no transport_protocol given; the device address names a serial port, so the'
+                          ' transport is serial.')
+        return data
+
+    @model_validator(mode='before')
+    @classmethod
+    def _write_multiple_registers_alias(cls, data):
+        """modbus_tk's ``write_multiple_registers`` (default true) names the two fixed write modes."""
+        if isinstance(data, dict) and 'write_multiple_registers' in data and 'write_mode' not in data:
+            data = dict(data)
+            flag = data.pop('write_multiple_registers')
+            if isinstance(flag, str):
+                flag = flag.strip().lower() not in ('false', 'f', 'no', 'n', '0', '')
+            data['write_mode'] = 'multiple' if flag else 'single'
+        return data
+
     @field_validator('register_map', mode='before')
     @classmethod
     def _normalize_register_map(cls, v, info):
@@ -458,10 +587,15 @@ class ModbusRemoteConfig(RemoteConfig):
     def is_server(self) -> bool:
         return self.driver_role is DriverRole.slave
 
-    @field_validator('parity', 'word_order', 'transport_protocol', mode='before')
+    @field_validator('parity', 'word_order', 'transport_protocol', 'write_mode', 'byte_order', mode='before')
     @classmethod
     def _lower(cls, v):
-        return _lower_or_none(v) if isinstance(v, str) else v
+        v = _lower_or_none(v) if isinstance(v, str) else v
+        return _BYTE_ORDER_SPELLINGS.get(v, _WORD_ORDER_SPELLINGS.get(v, v)) if isinstance(v, str) else v
+
+    def unknown_keys(self) -> list[str]:
+        """Configuration keys this driver does not define, for a warning at setup."""
+        return sorted(k for k in (self.model_extra or {}) if k not in LEGACY_REMOTE_KEYS)
 
     @property
     def resolved_reply_timeout(self) -> float:
