@@ -182,6 +182,17 @@ Through the platform driver's `call` RPC (`vctl driver call`), on any topic of t
 `report_device_id`, `comm_event_counter`), `file_record` (FC20/FC21, `action` and `records`) and `modbus_status`
 (the proxy's counters for the connection and unit).
 
+### Converting ACE IoT configurations
+
+`vctl modbus convert-ace <config.json> <devices/topic> -o DIR` turns an ACE `modbus_enhanced` configuration of any of
+its three shapes into this driver's: a gateway-as-device configuration becomes one device configuration per unit under
+the topic (sharing the gateway connection in the proxy), with the unit's registry from the per-unit dict, embedded
+`registers`, a template (including ACE's four built-ins) or the shared registry. `vctl modbus convert-ace-registry
+<csv>` rewrites a registry: ACE's named transforms become expressions (`scale_0_1` to `scale(0.1)`, `C_to_F` to
+`transform(scale(1.8), add(32))`, `error_to_none` to `invalid(...)`, `bit_3` to `bit(3)` ...), `Mixed Endian` becomes
+`Byte Order: little` (ACE read it as byte order), and lambdas are left blank with a note. Notes are written to
+`NOTES.txt` beside the output.
+
 ### Pad registers
 
 A row whose data type is `pad` (or `pad[n]`) declares registers to read but never publish. Use pads to bridge gaps
