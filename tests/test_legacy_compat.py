@@ -176,3 +176,25 @@ class TestDuplicateAddresses:
             {'Volttron Point Name': 'Fault', 'Point Address': '10', 'Bit': '3'},
             {'Volttron Point Name': 'gap', 'Point Address': '10', 'Modbus Register': 'pad', 'Table': 'input'}])
         assert len(rows) == 3 and all('transform' not in r for r in rows)
+
+
+class TestVirtualRows:
+    def test_virtual_rows_need_no_address_or_type_and_survive_the_map_merge(self, make_interface):
+        iface = make_interface([])
+        rows = iface.prepare_registry_config([
+            {'Volttron Point Name': 'W', 'Point Address': '80', 'Modbus Register': 'INT16', 'Transform': 'sunssf(W_SF)'},
+            {'Volttron Point Name': 'W_SF', 'Point Address': '81', 'Modbus Register': 'INT16'},
+            {'Volttron Point Name': 'W_kW', 'Point Address': '', 'Modbus Register': '', 'Table': '', 'Data Source': 'virtual',
+             'Transform': 'transform(value_of(W), scale(0.001))'}])
+        assert [r['Volttron Point Name'] for r in rows] == ['W', 'W_SF', 'W_kW']
+        cfg = ModbusPointConfig(**rows[2])
+        assert cfg.data_source.value == 'virtual' and cfg.address == 0 and cfg.data_type == 'uint16' and cfg.table is None
+
+    def test_two_virtual_rows_are_not_duplicates_of_each_other(self, make_interface):
+        iface = make_interface([])
+        rows = iface.prepare_registry_config([
+            {'Volttron Point Name': 'A', 'Data Source': 'virtual', 'Transform': 'sum_of(X)', 'Point Address': ''},
+            {'Volttron Point Name': 'B', 'Data Source': 'virtual', 'Transform': 'sum_of(Y)', 'Point Address': ''},
+            {'Volttron Point Name': 'X', 'Point Address': '1', 'Modbus Register': 'uint16'},
+            {'Volttron Point Name': 'Y', 'Point Address': '2', 'Modbus Register': 'uint16'}])
+        assert [r['Volttron Point Name'] for r in rows] == ['A', 'B', 'X', 'Y'] and rows[1]['Transform'] == 'sum_of(Y)'

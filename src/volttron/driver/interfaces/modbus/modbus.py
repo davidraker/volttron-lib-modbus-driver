@@ -58,6 +58,7 @@ from typing import Any, cast
 
 from protocol_proxy.protocol.modbus.registers import DATATYPE, PAD, RegisterSpec, is_boolean_spelling, parse_type_spec
 
+from volttron.driver.base.config import DataSource
 from volttron.driver.base.interfaces import BaseInterface, BaseRegister, BasicRevert
 from volttron.driver.base.proxy_interface import PointError, ProxyBackedInterface
 
@@ -270,8 +271,9 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
         for row in rows:
             try:
                 cfg = ModbusPointConfig(**row)
-                if cfg.is_pad or cfg.bit is not None or cfg.table is Table.exception_status or cfg.is_served:
-                    raise LookupError
+                if (cfg.is_pad or cfg.bit is not None or cfg.table is Table.exception_status or cfg.is_served
+                        or cfg.data_source is DataSource.VIRTUAL):
+                    raise LookupError                       # shares a register by design, or has no register at all
                 data_type, count, _ = parse_type_spec(cfg.data_type)
                 table = cfg.table or self._default_table(data_type, cfg.writable)
                 address = self.config.addressing.resolve(cfg.address, table)

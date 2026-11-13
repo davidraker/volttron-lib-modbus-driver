@@ -187,9 +187,20 @@ def register_name_of(row: dict) -> str | None:
     return str(name).strip() if name is not None else None
 
 
+_DATA_SOURCE_KEYS = ('data_source', 'Data Source')
+
+
+def row_is_virtual(row: dict) -> bool:
+    """A virtual point (held by the framework, never by this interface) needs no address or data type."""
+    source = _first_value(row, _DATA_SOURCE_KEYS)
+    return source is not None and str(getattr(source, 'value', source)).strip().lower() == 'virtual'
+
+
 def row_is_complete(row: dict) -> bool:
     """Whether a registry row can be validated on its own: it names an address and a data type (or a Bit, whose
-    register is a uint16)."""
+    register is a uint16), or it is a virtual point."""
+    if row_is_virtual(row):
+        return True
     return _first_value(row, _ADDRESS_KEYS) is not None and (_first_value(row, _DATA_TYPE_KEYS) is not None
                                                              or _first_value(row, ('bit', 'Bit')) is not None)
 
@@ -351,6 +362,21 @@ class ModbusPointConfig(PointConfig):
     @classmethod
     def _empty_bit(cls, v):
         return None if v == '' else v
+
+    @model_validator(mode='before')
+    @classmethod
+    def _virtual_points_need_no_register(cls, data):
+        """A virtual row is never handed to this interface; blank address and type get placeholders so it validates."""
+        if isinstance(data, dict) and row_is_virtual(data):
+            data = dict(data)
+            if _first_value(data, _ADDRESS_KEYS) is None:
+                data = {k: v for k, v in data.items() if k not in _ADDRESS_KEYS}
+                data['address'] = 0
+            if _first_value(data, _DATA_TYPE_KEYS) is None:
+                data = {k: v for k, v in data.items() if k not in _DATA_TYPE_KEYS}
+                data['data_type'] = 'uint16'
+            data = {k: v for k, v in data.items() if k not in ('table', 'Table') or v not in (None, '')}
+        return data
 
     @model_validator(mode='before')
     @classmethod
