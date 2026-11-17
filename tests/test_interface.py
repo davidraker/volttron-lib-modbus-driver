@@ -319,7 +319,7 @@ class TestSetup:
         ppm.queue(serialized({'client': 'tcp:10.0.0.4:502',
                               'configured': {'input': {'specs': 1, 'pads': 1, 'blocks': [[1001, 2]]}}, 'cleared': []}))
         interface.finalize_setup(initial_setup=True)
-        assert ppm.proxy_key == ('modbus',) and ppm.proxy_kwargs == {}
+        assert ppm.proxy_key == ('modbus',) and ppm.proxy_kwargs == {'persistent': True}
         [(method, payload, _)] = ppm.sent
         assert method == 'REGISTER_REMOTE'
         assert payload['device_address'] == '10.0.0.4' and payload['device_type'] == 'tcp' and payload['port'] == 502
@@ -330,7 +330,7 @@ class TestSetup:
         assert tables['input'][1] == {'address': 1005, 'data_type': 'PAD', 'count': 5}
         assert tables['holding'] == [{'address': 1003, 'data_type': 'FLOAT32', 'count': 2, 'word_order': 'big'},
                                      {'address': 1010, 'data_type': 'UINT16', 'count': 1, 'word_order': 'big'}]
-        assert tables['coil'] == [{'address': 5, 'data_type': 'BITS', 'count': 1, 'word_order': 'big'}]
+        assert tables['coil'] == [{'address': 5, 'data_type': 'BITS', 'count': 1, 'word_order': 'big', 'boolean': True}]
 
     def test_registration_summary_logged(self, interface, ppm, caplog):
         ppm.queue(serialized({'configured': {'input': {'specs': 1, 'pads': 1, 'blocks': [[1001, 2], [1010, 1]]}}}))
