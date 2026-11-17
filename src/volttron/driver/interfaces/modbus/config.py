@@ -24,17 +24,19 @@ ROLE_ALIASES = {'client': 'master', 'server': 'slave', 'outstation': 'slave'}
 
 
 class Table(str, Enum):
-    """The four Modbus data tables, named as the Modbus Protocol Proxy knows them, plus ``exception_status``: the eight
-    device-defined status bits FC07 returns, read as one integer point (no address)."""
+    """The four Modbus data tables, named as the Modbus Protocol Proxy knows them, plus two addressless or
+    pointer-addressed reads: ``exception_status``, the eight device-defined status bits FC07 returns as one integer
+    point, and ``fifo_queue``, the contents of the FIFO at a pointer register (FC24) as a list point."""
     coil = 'coil'
     discrete_input = 'discrete_input'
     holding = 'holding'
     input = 'input'
     exception_status = 'exception_status'
+    fifo_queue = 'fifo_queue'
 
     @property
     def read_only(self) -> bool:
-        return self in (Table.discrete_input, Table.input, Table.exception_status)
+        return self in (Table.discrete_input, Table.input, Table.exception_status, Table.fifo_queue)
 
     @property
     def is_bits(self) -> bool:
@@ -56,6 +58,7 @@ TABLE_ALIASES: dict[str, Table] = {
     'input': Table.input, 'input_register': Table.input, 'input_registers': Table.input,
     'analog_input_registers': Table.input, 'analog_input': Table.input,
     'exception_status': Table.exception_status, 'exception': Table.exception_status,
+    'fifo_queue': Table.fifo_queue, 'fifo': Table.fifo_queue,
 }
 
 # First address of each table in "Modbus addressing" (e.g., 40001 is the first holding register).

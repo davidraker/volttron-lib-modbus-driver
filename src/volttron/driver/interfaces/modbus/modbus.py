@@ -150,8 +150,11 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
 
     def create_register(self, register_definition: ModbusPointConfig) -> ModbusRegister:
         point = register_definition
+        type_text = point.data_type
+        if point.table is Table.fifo_queue and not (type_text or '').strip():
+            type_text = 'UINT16'                                 # a FIFO holds 16-bit registers; the type may be omitted
         try:
-            data_type, count, little_endian = parse_type_spec(point.data_type)
+            data_type, count, little_endian = parse_type_spec(type_text)
         except ValueError as e:
             raise ValueError(f"Point {point.volttron_point_name}: {e}") from e
         is_pad = data_type is PAD
@@ -169,7 +172,7 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
         if table.is_bits and data_type not in (DATATYPE.BITS, PAD):
             raise ValueError(f"Point {point.volttron_point_name}: {table.value} table holds booleans, not {data_type.name}.")
         if point.bit is not None:
-            if served or table.is_bits or table is Table.exception_status or is_pad:
+            if served or table.is_bits or table in (Table.exception_status, Table.fifo_queue) or is_pad:
                 raise ValueError(f"Point {point.volttron_point_name}: Bit applies to a holding or input register of a"
                                  f" device this driver reads, not to the {table.value} table or a served unit.")
             if data_type not in (DATATYPE.UINT16, DATATYPE.INT16):
@@ -182,6 +185,19 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
             spec = RegisterSpec(0, DATATYPE.UINT16)
             register = ModbusRegister(point.volttron_point_name, point.units, True, table, spec,
                                       description=point.description or point.notes)
+            return register
+        if table is Table.fifo_queue:
+            if served or point.writable:
+                raise ValueError(f"Point {point.volttron_point_name}: a fifo_queue is read from a device by FC24; it"
+                                 " cannot be written or served.")
+            if data_type not in (DATATYPE.UINT16, DATATYPE.INT16):
+                raise ValueError(f"Point {point.volttron_point_name}: a FIFO queue holds 16-bit registers, read as"
+                                 f" UINT16 (the default) or INT16, not {data_type.name}.")
+            # Address is the FIFO pointer register, counted as a holding register under the device's addressing.
+            spec = RegisterSpec(self.config.addressing.resolve(point.address, Table.holding), data_type)
+            register = ModbusRegister(point.volttron_point_name, point.units, True, table, spec,
+                                      description=point.description or point.notes)
+            register.python_type = list                      # the queue's entries, oldest first
             return register
         byte_order = point.byte_order or self.config.byte_order
         if point.word_order:
@@ -271,7 +287,7 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
         for row in rows:
             try:
                 cfg = ModbusPointConfig(**row)
-                if (cfg.is_pad or cfg.bit is not None or cfg.table is Table.exception_status or cfg.is_served
+                if (cfg.is_pad or cfg.bit is not None or cfg.table in (Table.exception_status, Table.fifo_queue) or cfg.is_served
                         or cfg.data_source is DataSource.VIRTUAL):
                     raise LookupError                       # shares a register by design, or has no register at all
                 data_type, count, _ = parse_type_spec(cfg.data_type)
@@ -319,8 +335,8 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
         tables: dict[str, list[dict]] = defaultdict(list)
         declared: dict[tuple[Table, int], tuple[dict, str]] = {}
         for topic, register in self.point_map.items():
-            if register.table is Table.exception_status:
-                continue                                        # FC07 has no register to declare
+            if register.table in (Table.exception_status, Table.fifo_queue):
+                continue                                        # FC07 has no register to declare; FC24 is read by pointer
             fields = register.spec_fields()
             if self.is_server:
                 fields.update({'topic': topic, 'remote_writable': register.remote_writable, 'initial_value': register.default_value})
@@ -385,6 +401,11 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
             if table is Table.exception_status:
                 batches.append(({'register_map': table.value, 'queries': [[0, 1]]}, batch))      # FC07: one raw value
                 continue
+            if table is Table.fifo_queue:                                   # FC24: one request per queue, kept whole
+                for topic in batch:
+                    address = cast(ModbusRegister, self.point_map[topic]).address
+                    batches.append(({'register_map': table.value, 'queries': [[address, 1]]}, [topic]))
+                continue
             payload = {'register_map': table.value, 'decode': True}         # the header's remote id names device and unit
             if len(batch) < self._point_count(table):
                 payload['queries'] = self._queries_for(table, [cast(ModbusRegister, self.point_map[t]) for t in batch])
@@ -392,14 +413,27 @@ class Modbus(ProxyBackedInterface, BasicRevert, BaseInterface):
         return batches
 
     def interpret_read(self, topics: list[str], result: Any, request_errors: Any) -> tuple[dict, dict]:
-        """A raw FC07 reply is a list holding the one status value; every other table answers by address."""
-        if topics and cast(ModbusRegister, self.point_map[topics[0]]).table is Table.exception_status:
+        """A raw FC07 reply is a list holding the one status value, a raw FC24 reply the list of queue entries; every
+        other table answers by address."""
+        table = cast(ModbusRegister, self.point_map[topics[0]]).table if topics else None
+        if table is Table.exception_status:
             if isinstance(result, list) and result and isinstance(result[0], list) and result[0]:
                 return {topic: int(result[0][0]) for topic in topics}, {}
-            message = (request_errors[0] if isinstance(request_errors, list) and request_errors and request_errors[0]
-                       else request_errors or 'No value returned by the Modbus Proxy.')
-            return {}, {topic: str(message) for topic in topics}
+            return {}, {topic: self._raw_read_error(request_errors) for topic in topics}
+        if table is Table.fifo_queue:                            # one topic per request; an empty queue is a value
+            if isinstance(result, list) and result and isinstance(result[0], list):
+                register = cast(ModbusRegister, self.point_map[topics[0]])
+                signed = register.spec.data_type is DATATYPE.INT16
+                values = [int(v) - 0x10000 if signed and int(v) >= 0x8000 else int(v) for v in result[0]]
+                return {topics[0]: values}, {}
+            return {}, {topic: self._raw_read_error(request_errors) for topic in topics}
         return ProxyBackedInterface.interpret_read(self, topics, result, request_errors)
+
+    @staticmethod
+    def _raw_read_error(request_errors: Any) -> str:
+        if isinstance(request_errors, list) and request_errors and request_errors[0]:
+            return str(request_errors[0])
+        return str(request_errors or 'No value returned by the Modbus Proxy.')
 
     def read_result(self, register: BaseRegister, entry: Any) -> Any:
         """A bit point takes its bit from the decoded word of the register it shares."""

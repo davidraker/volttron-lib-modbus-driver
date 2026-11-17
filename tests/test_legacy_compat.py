@@ -71,6 +71,40 @@ class TestExceptionStatus:
             iface.create_register(point('W', 0, 'uint16', table='exception_status', writable=True))
 
 
+class TestFifoQueue:
+    def test_fifo_point_reads_the_whole_queue_as_a_list(self, make_interface, ppm):
+        iface = make_interface([point('Events', 1200, '', table='fifo_queue'), point('Deltas', 1300, 'int16', table='fifo'),
+                                point('Mode', 1010, 'uint16', writable=True)])
+        iface.proxy_peer = ppm.peer
+        assert 'fifo_queue' not in iface.registration_payload()['tables']           # FC24 declares no registers
+        assert iface.point_map[TOPIC('Events')].python_type is list
+        ppm.queue(serialized([[7, 8, 9]], [None]), serialized([[0xFFFE, 3]], [None]), serialized({'1010': 3}))
+        results, errors = iface.get_multiple_points([TOPIC('Events'), TOPIC('Deltas'), TOPIC('Mode')])
+        assert results == {TOPIC('Events'): [7, 8, 9], TOPIC('Deltas'): [-2, 3], TOPIC('Mode'): 3} and errors == {}
+        assert ppm.payloads()[:2] == [{'register_map': 'fifo_queue', 'queries': [[1200, 1]]},
+                                      {'register_map': 'fifo_queue', 'queries': [[1300, 1]]}]   # one request per queue
+
+    def test_empty_queue_is_a_value_and_a_failed_read_is_an_error(self, make_interface, ppm):
+        iface = make_interface([point('Events', 1200, 'uint16', table='fifo_queue')])
+        iface.proxy_peer = ppm.peer
+        ppm.queue(serialized([[]], [None]))
+        assert iface.get_multiple_points([TOPIC('Events')]) == ({TOPIC('Events'): []}, {})
+        ppm.queue(serialized([None], ['Illegal function']))
+        results, errors = iface.get_multiple_points([TOPIC('Events')])
+        assert results == {} and errors == {TOPIC('Events'): 'Illegal function'}
+
+    def test_fifo_rows_are_read_only_16_bit_and_follow_the_addressing(self, make_interface):
+        iface = make_interface([], addressing='address')
+        register = iface.create_register(point('Events', 41201, 'uint16', table='fifo_queue'))
+        assert register.address == 1200                                             # 4xxxx counted as a holding register
+        with pytest.raises(ValueError, match='read-only'):
+            iface.create_register(point('W', 1200, 'uint16', table='fifo_queue', writable=True))
+        with pytest.raises(ValueError, match='16-bit'):
+            iface.create_register(point('F', 1200, 'float32', table='fifo_queue'))
+        with pytest.raises(ValueError, match='Bit applies'):
+            iface.create_register(point('B', 1200, 'uint16', table='fifo_queue', bit=3))
+
+
 class TestDeviceLevelCalls:
     def test_device_identification_at_registration(self, ppm):
         from volttron.driver.base.testing import build_interface
