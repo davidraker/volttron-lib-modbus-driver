@@ -1,11 +1,12 @@
 """Drive a real VOLTTRON platform through its command-line tools for integration tests.
 
 The platform runs in a temporary VOLTTRON_HOME using the Python environment running the tests. Agents are installed
-with ``vctl`` and points are read and written with ``vdrv`` (the Platform Driver's command-line tool), which is how an
+with ``vctl`` and points are read and written with ``vctl driver`` (the Platform Driver's vctl plugin), which is how an
 operator would exercise a driver. This avoids ``volttrontesting.PlatformWrapper.build_agent``, which does not yet
 support the modular platform's credential-based authentication.
 """
 import ast
+import importlib.util
 import os
 import re
 import subprocess
@@ -81,7 +82,10 @@ class PlatformCLI:
     @classmethod
     def available(cls) -> bool:
         bin = Path(sys.executable).parent
-        return all((bin / exe).exists() for exe in ('volttron', 'vctl', 'vdrv'))
+        # The point helpers run ``vctl driver``, a plugin that vctl finds only when the Platform Driver package is
+        # installed in this environment.
+        return (all((bin / exe).exists() for exe in ('volttron', 'vctl'))
+                and importlib.util.find_spec('volttron.plugins.vctl.driver') is not None)
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -178,17 +182,21 @@ class PlatformCLI:
     def store_config(self, identity: str, name: str, path: Path, csv: bool = False):
         self.vctl('config', 'store', identity, name, str(path), *(['--csv'] if csv else []))
 
-    def vdrv(self, *args, timeout=90.0):
-        """Run a vdrv driver command and return its printed Python literal (a dict, or a (results, errors) tuple)."""
-        output = self._run(['vdrv', 'driver', *args], timeout=timeout).stdout
-        start = min((i for i in (output.find('{'), output.find('(')) if i >= 0), default=-1)
+    def driver(self, *args, timeout=90.0):
+        """Run a ``vctl driver`` command and return its printed Python literal: a dict, or a (results, errors) pair,
+        which the JSON round trip through vctl delivers as a two-element list."""
+        output = self._run(['vctl', 'driver', *args], timeout=timeout).stdout
+        start = min((i for i in (output.find(c) for c in '{([') if i >= 0), default=-1)
         if start < 0:
-            raise PlatformError(f'unexpected vdrv output: {output!r}')
+            raise PlatformError(f'unexpected vctl driver output: {output!r}')
         return ast.literal_eval(output[start:].strip())
 
     def get(self, topic: str):
         """Values keyed by full topic. For a point topic the dict has one entry."""
-        return self.vdrv('get', topic)
+        results, errors = self.driver('get', topic)
+        if errors:
+            raise PlatformError(f'get {topic} failed: {errors}')
+        return results
 
     def get_point(self, topic: str):
         values = self.get(topic)
@@ -197,10 +205,10 @@ class PlatformCLI:
         return values[topic]
 
     def set_point(self, topic: str, value):
-        results, errors = self.vdrv('set', '--', topic, str(value))
+        results, errors = self.driver('set', '--', topic, str(value))
         if errors:
             raise PlatformError(f'set {topic} failed: {errors}')
         return results[topic]
 
     def revert(self, topic: str):
-        return self.vdrv('revert', topic)
+        return self.driver('revert', topic)

@@ -253,7 +253,7 @@ proxy process and a pymodbus TCP simulator on a free local port; it needs no har
 
 `tests/test_driver_local.py` goes one level further: it starts a real VOLTTRON platform in a temporary home, installs
 the Platform Driver, configures this driver against a local modbus_tk server, and reads and writes every struct data
-type in both byte orders through `vdrv`. It takes a few minutes, mostly platform start-up. Set
+type in both byte orders through `vctl driver`. It takes a few minutes, mostly platform start-up. Set
 `MODBUS_SKIP_PLATFORM_TESTS=1` to skip it. `tests/test_driver_demo_board.py` runs the same flow against real hardware
 when `MODBUS_TEST_IP` is set.
 

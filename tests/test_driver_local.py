@@ -2,7 +2,7 @@
 
 A real VOLTTRON platform (see the ``platform`` fixture) runs the Platform Driver, which polls a modbus_tk TCP server
 started here through the Modbus Protocol Proxy. Points cover every struct data type in both byte orders, including the
-legacy '<' little-endian forms, and are read and written through the Platform Driver's ``vdrv`` command-line tool.
+legacy '<' little-endian forms, and are read and written through the Platform Driver's ``vctl driver`` commands.
 """
 import csv
 import json

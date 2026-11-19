@@ -71,7 +71,7 @@ PLATFORM_DRIVER = 'platform.driver'
 
 @pytest.fixture(scope='module')
 def platform(tmp_path_factory):
-    """A real VOLTTRON platform with the Platform Driver installed, driven through vctl and vdrv.
+    """A real VOLTTRON platform with the Platform Driver installed, driven through vctl (``vctl driver`` for points).
 
     Slow (a few minutes) because the platform builds a poetry project of the environment on first start. Set
     MODBUS_SKIP_PLATFORM_TESTS=1 to skip these tests.
@@ -79,7 +79,7 @@ def platform(tmp_path_factory):
     if os.environ.get('MODBUS_SKIP_PLATFORM_TESTS'):
         pytest.skip('MODBUS_SKIP_PLATFORM_TESTS is set')
     if not PlatformCLI.available():
-        pytest.skip('volttron, vctl and vdrv must be installed in the test environment')
+        pytest.skip('volttron, vctl and the Platform Driver (for vctl driver) must be installed in the test environment')
     cli = PlatformCLI(tmp_path_factory.mktemp('platform') / 'volttron_home')
     cli.start()
     try:
